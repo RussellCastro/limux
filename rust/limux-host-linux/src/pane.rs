@@ -585,6 +585,130 @@ fn browser_wait_script(selector: Option<&str>) -> String {
     )
 }
 
+
+#[cfg(feature = "webkit")]
+fn browser_action_script(
+    method: &str,
+    selector: Option<&str>,
+    text: Option<&str>,
+    value: Option<&str>,
+    key: Option<&str>,
+    dy: Option<u64>,
+) -> String {
+    let method = serde_json::to_string(method).unwrap_or_else(|_| "\"\"".to_string());
+    let selector = match selector {
+        Some(selector) => serde_json::to_string(selector).unwrap_or_else(|_| "null".to_string()),
+        None => "null".to_string(),
+    };
+    let text = match text {
+        Some(text) => serde_json::to_string(text).unwrap_or_else(|_| "null".to_string()),
+        None => "null".to_string(),
+    };
+    let value = match value {
+        Some(value) => serde_json::to_string(value).unwrap_or_else(|_| "null".to_string()),
+        None => "null".to_string(),
+    };
+    let key = match key {
+        Some(key) => serde_json::to_string(key).unwrap_or_else(|_| "null".to_string()),
+        None => "null".to_string(),
+    };
+    let dy = dy.unwrap_or(0);
+    format!(
+        r#"
+(() => {{
+  const method = {method};
+  const selector = {selector};
+  const text = {text};
+  const value = {value};
+  const key = {key};
+  const dy = {dy};
+  const needsElement = !['press', 'keydown', 'keyup', 'scroll'].includes(method) || selector !== null;
+  const el = selector == null ? null : document.querySelector(selector);
+  if (needsElement && !el) {{
+    return JSON.stringify({{ ok: false, selector, error: 'element not found; snapshot: run browser.snapshot; hint: verify selector' }});
+  }}
+  const target = el || document.activeElement || document.body || document;
+  const focusTarget = () => {{
+    if (!el) return;
+    if (el.scrollIntoView) el.scrollIntoView({{ block: 'center', inline: 'center' }});
+    try {{ el.focus({{ preventScroll: true }}); }} catch (_) {{ try {{ el.focus(); }} catch (_) {{}} }}
+  }};
+  const emitInput = (node) => {{
+    node.dispatchEvent(new Event('input', {{ bubbles: true }}));
+    node.dispatchEvent(new Event('change', {{ bubbles: true }}));
+  }};
+  if (method === 'type') {{
+    focusTarget();
+    const append = text == null ? '' : text;
+    if ('value' in el) {{
+      el.value = `${{el.value || ''}}${{append}}`;
+    }} else {{
+      el.textContent = `${{el.textContent || ''}}${{append}}`;
+    }}
+    emitInput(el);
+    return JSON.stringify({{ ok: true, selector, text: append }});
+  }}
+  if (method === 'check' || method === 'uncheck') {{
+    focusTarget();
+    el.checked = method === 'check';
+    emitInput(el);
+    return JSON.stringify({{ ok: true, selector, checked: el.checked }});
+  }}
+  if (method === 'select') {{
+    focusTarget();
+    const selected = value == null ? '' : value;
+    if ('value' in el) el.value = selected;
+    emitInput(el);
+    return JSON.stringify({{ ok: true, selector, value: selected }});
+  }}
+  if (method === 'focus') {{
+    focusTarget();
+    return JSON.stringify({{ ok: true, selector }});
+  }}
+  if (method === 'hover') {{
+    focusTarget();
+    for (const eventName of ['mouseover', 'mouseenter', 'mousemove']) {{
+      el.dispatchEvent(new MouseEvent(eventName, {{ bubbles: true, view: window }}));
+    }}
+    return JSON.stringify({{ ok: true, selector }});
+  }}
+  if (method === 'dblclick') {{
+    focusTarget();
+    el.dispatchEvent(new MouseEvent('dblclick', {{ bubbles: true, view: window }}));
+    return JSON.stringify({{ ok: true, selector }});
+  }}
+  if (method === 'scroll_into_view') {{
+    if (el.scrollIntoView) el.scrollIntoView({{ block: 'center', inline: 'center' }});
+    return JSON.stringify({{ ok: true, selector }});
+  }}
+  if (method === 'scroll') {{
+    if (el) {{
+      el.scrollTop = (el.scrollTop || 0) + dy;
+      return JSON.stringify({{ ok: true, selector, dy, scrollTop: el.scrollTop }});
+    }}
+    window.scrollBy({{ top: dy, left: 0, behavior: 'auto' }});
+    return JSON.stringify({{ ok: true, dy, scrollY: window.scrollY }});
+  }}
+  if (method === 'press' || method === 'keydown' || method === 'keyup') {{
+    const eventKey = key == null ? '' : key;
+    if (!eventKey) return JSON.stringify({{ ok: false, error: `${{method}} requires key` }});
+    if (method === 'press' || method === 'keydown') {{
+      target.dispatchEvent(new KeyboardEvent('keydown', {{ key: eventKey, bubbles: true }}));
+    }}
+    if (method === 'press') {{
+      target.dispatchEvent(new KeyboardEvent('keypress', {{ key: eventKey, bubbles: true }}));
+    }}
+    if (method === 'press' || method === 'keyup') {{
+      target.dispatchEvent(new KeyboardEvent('keyup', {{ key: eventKey, bubbles: true }}));
+    }}
+    return JSON.stringify({{ ok: true, key: eventKey }});
+  }}
+  return JSON.stringify({{ ok: false, error: `unsupported browser action: ${{method}}` }});
+}})()
+"#
+    )
+}
+
 fn pane_id_for_initial_state(initial_state: Option<&PaneState>) -> u32 {
     if let Some(id) = initial_state
         .and_then(|state| state.pane_id)
@@ -3560,6 +3684,20 @@ impl BrowserControlHandle {
     ) {
         self.handles.wait(selector, on_result)
     }
+
+    pub(crate) fn action(
+        &self,
+        method: String,
+        selector: Option<String>,
+        text: Option<String>,
+        value: Option<String>,
+        key: Option<String>,
+        dy: Option<u64>,
+        on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
+    ) {
+        self.handles
+            .action(method, selector, text, value, key, dy, on_result)
+    }
 }
 
 #[cfg(feature = "webkit")]
@@ -3730,6 +3868,39 @@ impl BrowserHandles {
         self.evaluate_javascript(browser_wait_script(selector.as_deref()), move |result| {
             parse_browser_json_result("browser.wait", result, on_result)
         });
+    }
+
+    fn action(
+        &self,
+        method: String,
+        selector: Option<String>,
+        text: Option<String>,
+        value: Option<String>,
+        key: Option<String>,
+        dy: Option<u64>,
+        on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
+    ) {
+        let selector = match selector {
+            Some(selector) => match resolve_browser_selector(&self.automation_refs, &selector) {
+                Ok(selector) => Some(selector),
+                Err(error) => {
+                    on_result(Err(error));
+                    return;
+                }
+            },
+            None => None,
+        };
+        self.evaluate_javascript(
+            browser_action_script(
+                &method,
+                selector.as_deref(),
+                text.as_deref(),
+                value.as_deref(),
+                key.as_deref(),
+                dy,
+            ),
+            move |result| parse_browser_json_result("browser.action", result, on_result),
+        );
     }
 
     fn focus_location(&self) -> bool {
@@ -3931,6 +4102,19 @@ impl BrowserHandles {
         on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
     ) {
         on_result(Err("browser.wait requires WebKit support".to_string()));
+    }
+
+    fn action(
+        &self,
+        _method: String,
+        _selector: Option<String>,
+        _text: Option<String>,
+        _value: Option<String>,
+        _key: Option<String>,
+        _dy: Option<u64>,
+        on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
+    ) {
+        on_result(Err("browser action commands require WebKit support".to_string()));
     }
 
     fn focus_location(&self) -> bool {

@@ -59,6 +59,18 @@ const METHODS: &[&str] = &[
     "browser.find.nth",
     "browser.click",
     "browser.fill",
+    "browser.type",
+    "browser.check",
+    "browser.uncheck",
+    "browser.select",
+    "browser.focus",
+    "browser.hover",
+    "browser.dblclick",
+    "browser.scroll",
+    "browser.scroll_into_view",
+    "browser.press",
+    "browser.keydown",
+    "browser.keyup",
     "notification.create",
 ];
 
@@ -217,6 +229,17 @@ pub enum ControlCommand {
         text: String,
         reply: mpsc::Sender<BridgeResult>,
     },
+    BrowserAction {
+        target: WorkspaceTarget,
+        surface_hint: Option<String>,
+        action: String,
+        selector: Option<String>,
+        text: Option<String>,
+        value: Option<String>,
+        key: Option<String>,
+        dy: Option<u64>,
+        reply: mpsc::Sender<BridgeResult>,
+    },
     ListSurfaces {
         target: WorkspaceTarget,
         reply: mpsc::Sender<BridgeResult>,
@@ -294,6 +317,7 @@ impl ControlCommand {
             | Self::BrowserFind { reply, .. }
             | Self::BrowserClick { reply, .. }
             | Self::BrowserFill { reply, .. }
+            | Self::BrowserAction { reply, .. }
             | Self::ListSurfaces { reply, .. }
             | Self::SurfaceHealth { reply, .. }
             | Self::ReadSurfaceText { reply, .. }
@@ -375,6 +399,16 @@ fn optional_string(params: &Map<String, Value>, keys: &[&str]) -> Option<String>
             .get(*key)
             .and_then(Value::as_str)
             .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+    })
+}
+
+fn optional_raw_string(params: &Map<String, Value>, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        params
+            .get(*key)
+            .and_then(Value::as_str)
             .filter(|value| !value.is_empty())
             .map(ToOwned::to_owned)
     })
@@ -876,7 +910,7 @@ fn handle_method(
                     Ok(surface_hint) => surface_hint,
                     Err(error) => return error_response(id, error),
                 };
-            let text = optional_string(params, &["value", "text"]).unwrap_or_default();
+            let text = optional_raw_string(params, &["value", "text"]).unwrap_or_default();
             let (reply, rx) = mpsc::channel();
             (
                 ControlCommand::BrowserFill {
@@ -884,6 +918,88 @@ fn handle_method(
                     surface_hint,
                     selector,
                     text,
+                    reply,
+                },
+                rx,
+            )
+        }
+        "browser.type"
+        | "browser.check"
+        | "browser.uncheck"
+        | "browser.select"
+        | "browser.focus"
+        | "browser.hover"
+        | "browser.dblclick"
+        | "browser.scroll"
+        | "browser.scroll_into_view"
+        | "browser.press"
+        | "browser.keydown"
+        | "browser.keyup" => {
+            let action = method.trim_start_matches("browser.").to_string();
+            let selector = optional_string(params, &["selector"]);
+            let key = optional_string(params, &["key"]);
+            let text = optional_raw_string(params, &["text"]);
+            let value = optional_raw_string(params, &["value"]);
+            let dy = match optional_index(params, "dy") {
+                Ok(Some(value)) => Some(value as u64),
+                Ok(None) => match optional_index(params, "amount") {
+                    Ok(amount) => amount.map(|value| value as u64),
+                    Err(error) => return error_response(id, error),
+                },
+                Err(error) => return error_response(id, error),
+            };
+            let needs_selector = matches!(
+                action.as_str(),
+                "type"
+                    | "check"
+                    | "uncheck"
+                    | "select"
+                    | "focus"
+                    | "hover"
+                    | "dblclick"
+                    | "scroll_into_view"
+            );
+            if needs_selector && selector.is_none() {
+                return error_response(
+                    id,
+                    BridgeError::invalid_params(format!("browser.{action} requires selector")),
+                );
+            }
+            if action == "type" && text.is_none() {
+                return error_response(id, BridgeError::invalid_params("browser.type requires text"));
+            }
+            if action == "select" && value.is_none() {
+                return error_response(
+                    id,
+                    BridgeError::invalid_params("browser.select requires value"),
+                );
+            }
+            if matches!(action.as_str(), "press" | "keydown" | "keyup") && key.is_none() {
+                return error_response(
+                    id,
+                    BridgeError::invalid_params(format!("browser.{action} requires key")),
+                );
+            }
+            let target = match parse_optional_workspace_target(params, true) {
+                Ok(target) => target,
+                Err(error) => return error_response(id, error),
+            };
+            let surface_hint =
+                match optional_ref_handle(params, &["surface_id", "id"], "surface:") {
+                    Ok(surface_hint) => surface_hint,
+                    Err(error) => return error_response(id, error),
+                };
+            let (reply, rx) = mpsc::channel();
+            (
+                ControlCommand::BrowserAction {
+                    target,
+                    surface_hint,
+                    action,
+                    selector,
+                    text,
+                    value,
+                    key,
+                    dy,
                     reply,
                 },
                 rx,
@@ -1615,6 +1731,63 @@ mod tests {
         );
         assert_eq!(fill_response.error, None);
         assert_eq!(fill_response.result.expect("result")["value"], "Ada");
+    }
+
+    #[test]
+    fn browser_action_routes_require_required_fields_and_accept_surface_refs() {
+        let missing_text = dispatch_request(
+            r#"{"id":1,"method":"browser.type","params":{"surface_id":"surface:9:tab","selector":"#name"}}"#,
+            &|command| panic!("invalid browser.type should not dispatch: {command:?}"),
+        );
+        assert_eq!(missing_text.result, None);
+        assert_eq!(
+            missing_text.error.as_ref().map(|error| error.code),
+            Some(INVALID_PARAMS_CODE)
+        );
+
+        let type_response = dispatch_request(
+            r#"{"id":2,"method":"browser.type","params":{"surface_id":"surface:9:tab","selector":"#name","text":" Ada"}}"#,
+            &|command| match command {
+                ControlCommand::BrowserAction {
+                    target,
+                    surface_hint,
+                    action,
+                    selector,
+                    text,
+                    value,
+                    key,
+                    dy,
+                    reply,
+                } => {
+                    assert_eq!(target, WorkspaceTarget::Active);
+                    assert_eq!(surface_hint, Some("9:tab".to_string()));
+                    assert_eq!(action, "type");
+                    assert_eq!(selector, Some("#name".to_string()));
+                    assert_eq!(text, Some(" Ada".to_string()));
+                    assert_eq!(value, None);
+                    assert_eq!(key, None);
+                    assert_eq!(dy, None);
+                    let _ = reply.send(Ok(json!({ "ok": true, "selector": selector, "text": text })));
+                }
+                other => panic!("unexpected command: {other:?}"),
+            },
+        );
+        assert_eq!(type_response.error, None);
+        assert_eq!(type_response.result.expect("result")["text"], " Ada");
+
+        let key_response = dispatch_request(
+            r#"{"id":3,"method":"browser.press","params":{"surface_id":"surface:9:tab","key":"Enter"}}"#,
+            &|command| match command {
+                ControlCommand::BrowserAction { action, key, reply, .. } => {
+                    assert_eq!(action, "press");
+                    assert_eq!(key, Some("Enter".to_string()));
+                    let _ = reply.send(Ok(json!({ "ok": true, "key": key })));
+                }
+                other => panic!("unexpected command: {other:?}"),
+            },
+        );
+        assert_eq!(key_response.error, None);
+        assert_eq!(key_response.result.expect("result")["key"], "Enter");
     }
 
     #[test]
