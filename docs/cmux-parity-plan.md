@@ -1,5 +1,13 @@
 # cmux-parity plan (revised after architectural discovery)
 
+## Parity contract
+
+`docs/cmux-parity-contract.md` is the required capability matrix for cmux
+compatibility. Update that file whenever a change moves a cmux capability
+between `missing`, `partial`, `blocked`, `deferred`, or `complete`.
+`./scripts/check-cmux-parity.sh` enforces that every required capability stays
+tracked.
+
 ## Architecture discovery
 
 Limux has **two control servers**:

@@ -1,0 +1,59 @@
+# cmux parity contract
+
+This document is the source of truth for Limux parity with
+`manaflow-ai/cmux`. Keep it current when adding, removing, or re-scoping
+cmux-compatible behavior.
+
+The tracked capability set is based on the cmux README feature surface as of
+2026-06-13. Re-check upstream cmux before changing the required set. Use these
+status values:
+
+- `complete`: Limux has the user-visible behavior and a regression check or
+  smoke path.
+- `partial`: Limux has meaningful behavior, but important cmux semantics are
+  missing.
+- `missing`: Limux does not have the behavior.
+- `blocked`: Work needs an upstream dependency, platform decision, or design
+  decision before implementation.
+- `deferred`: Intentionally out of scope for the current parity push.
+
+Each tracked capability must keep a marker in this exact form so
+`scripts/check-cmux-parity.sh` can enforce coverage:
+
+```text
+<!-- cmux-parity:<capability-id> status=<status> -->
+```
+
+## Capability Matrix
+
+| Capability | Limux status | cmux behavior to match | Current Limux behavior | Next parity step |
+|---|---|---|---|---|
+| Notification rings | partial <!-- cmux-parity:notification-rings status=partial --> | Panes get attention rings and sidebar tabs light up when agents need attention. | Limux has `limux notify`, libadwaita toast, and sidebar unread badge plumbing. Pane-level attention rings are not documented as complete. | Add pane/surface attention state, visual ring, and an Xvfb smoke assertion. |
+| Notification panel | missing <!-- cmux-parity:notification-panel status=missing --> | Dedicated panel lists pending notifications and can jump to the latest unread item. | Limux exposes toasts and unread workspace state, but no documented notification panel. | Add a notification model exposed to GTK, panel UI, jump action, and CLI smoke coverage. |
+| Scriptable browser | missing <!-- cmux-parity:scriptable-browser status=missing --> | Browser panes can be driven through CLI/socket APIs for accessibility tree snapshots, element refs, click/fill, JS eval, and URL control. | Limux has a WebKitGTK browser, but the live GTK bridge does not support browser commands. | Implement browser command bridge parity before broader automation claims. |
+| Browser split | partial <!-- cmux-parity:browser-split status=partial --> | Browser can open alongside terminals as a split surface. | Limux documents a built-in browser and `Ctrl+Shift+L` to open the focused browser page in a new split. | Add CLI/socket creation and targeting coverage for browser surfaces. |
+| Vertical and horizontal tabs | partial <!-- cmux-parity:tabs-and-splits status=partial --> | Sidebar vertical workspace tabs plus horizontal/vertical split panes and surface tabs. | Limux has workspaces, split panes, and tabbed terminals. | Confirm cmux navigation semantics and add shortcut-level regression coverage where feasible. |
+| Sidebar metadata | missing <!-- cmux-parity:sidebar-metadata status=missing --> | Sidebar shows git branch, linked PR status/number, working directory, listening ports, and latest notification text. | Limux sidebar manages workspaces, persistence, favorites, pinning, and unread state. | Add metadata collectors with failure-tolerant refresh and tests for parsing logic. |
+| SSH workspaces | missing <!-- cmux-parity:ssh-workspaces status=missing --> | `cmux ssh user@remote` creates a remote workspace; browser panes route through the remote network; image drag uploads via `scp`. | No documented Limux equivalent. | Decide whether SSH belongs in parity v1 or should remain deferred behind browser automation. |
+| Agent teams | partial <!-- cmux-parity:agent-teams status=partial --> | Claude Code Teams spawn as native splits with sidebar metadata and notifications. | Limux has `limux agent-team --agents codex,claude[,opencode,gemini]`, workspace spawning, generated `AGENTS.md`, and by-name send. | Align UX with cmux team launch semantics and add missing sidebar metadata. |
+| Browser import | missing <!-- cmux-parity:browser-import status=missing --> | Browser panes can import cookies, history, and sessions from Chrome, Firefox, Arc, and other browsers. | No documented Limux equivalent. | Scope browser profile storage, import permissions, and WebKitGTK cookie/session APIs. |
+| Custom commands | missing <!-- cmux-parity:custom-commands status=missing --> | Project-specific commands in `cmux.json` launch from the command palette. | No documented Limux equivalent. | Define a Linux-compatible config schema only after command palette/settings direction is settled. |
+| Scriptable terminal API | partial <!-- cmux-parity:scriptable-terminal-api status=partial --> | CLI and socket API can create workspaces, split panes, send keystrokes, and inspect/control terminal surfaces. | Limux live bridge supports workspace list/create/select/rename/close, pane/surface list, terminal pane create, text/key send, read text, health, and notifications. | Fill remaining dispatcher parity gaps and document stable API compatibility. |
+| Native Linux app | complete <!-- cmux-parity:native-linux-app status=complete --> | cmux is a native macOS AppKit app rather than Electron. | Limux is GTK4/libadwaita, not Electron. | Keep UI work native and avoid adding web-shell dependencies. |
+| Ghostty compatibility | partial <!-- cmux-parity:ghostty-compatibility status=partial --> | Reads existing Ghostty config for themes, fonts, and colors. | Limux embeds Ghostty rendering through `libghostty.so`; Ghostty config parity is not documented as complete. | Audit Ghostty config loading and document supported keys. |
+| GPU acceleration | complete <!-- cmux-parity:gpu-acceleration status=complete --> | Powered by libghostty for GPU-accelerated terminal rendering. | Limux uses embedded Ghostty with OpenGL rendering. | Preserve GPU path in packaging and smoke tests. |
+| Session restore | partial <!-- cmux-parity:session-restore status=partial --> | Restores layout, working directories, terminal scrollback best effort, browser URL/history, and supported agent sessions. | Limux documents workspace persistence and hook/session behavior, but not full cmux restore semantics. | Split restore requirements into app layout, terminal scrollback, browser state, and agent resume tests. |
+| Agent resume hooks | partial <!-- cmux-parity:agent-resume-hooks status=partial --> | Hooks/resume integrations cover Claude Code, Codex, Grok, OpenCode, Pi, Amp, Cursor CLI, Gemini, Rovo Dev, Copilot, CodeBuddy, Factory, and Qoder. | Limux README documents Codex, Claude Code, and Gemini hooks; OpenCode templates are omitted until ready. | Expand supported agents deliberately, with dry-run tests and generated hook template checks. |
+| Keyboard shortcuts | partial <!-- cmux-parity:keyboard-shortcuts status=partial --> | cmux provides workspace, surface, split, browser, notification, find, terminal, and window shortcuts with macOS conventions and customization. | Limux maps default behavior to Linux `Ctrl`/`Alt`/`Meta` conventions and documents app/browser/find/terminal/workspace shortcuts. | Add close-tab, notification navigation, command palette/settings, and remapping parity decisions. |
+| Distribution and updates | partial <!-- cmux-parity:distribution-updates status=partial --> | DMG/Homebrew installs and Sparkle auto-updates; nightly app has separate bundle/update feed. | Limux ships `.deb`, AppImage, tarball, and AUR package, with no documented auto-update channel. | Decide Linux update story: distro packages only, AppImage update metadata, Flatpak, or none. |
+
+## Parity Rules
+
+- Prefer upstreamable Limux changes over long-lived fork-only behavior.
+- Reimplement cmux behavior from public behavior and docs; do not copy GPL
+  cmux implementation code into Limux's MIT-licensed codebase.
+- A feature is not `complete` until the user-visible behavior is documented
+  and has a regression test, smoke test, or explicit manual verification note.
+- Browser automation is the highest-impact missing capability because it blocks
+  agent workflows that depend on inspecting and controlling web UIs from inside
+  the terminal workspace.

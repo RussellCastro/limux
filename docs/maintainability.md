@@ -12,6 +12,7 @@ Every change should keep the workspace green under the canonical local check:
 
 That script is the source of truth for the repository quality gate and currently runs:
 
+- `./scripts/check-cmux-parity.sh`
 - `cargo fmt --check`
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - `cargo test --workspace`

@@ -77,6 +77,9 @@ not only the standalone dispatcher. The live bridge supports workspace, pane,
 surface, terminal send/key/read/health, notification, and terminal pane-create
 commands. Browser command bridge parity remains separate work; check
 `docs/cmux-parity-plan.md` before changing agent or browser automation.
+For cmux-compatibility work, also update `docs/cmux-parity-contract.md`;
+`./scripts/check-cmux-parity.sh` fails if a required cmux capability is no
+longer tracked.
 
 ## IDs And Env
 
