@@ -308,6 +308,76 @@ fn focused_surface_payload(state: &State) -> Option<serde_json::Value> {
     Some(serde_json::Value::Object(payload))
 }
 
+fn browser_tab_row(surface: pane::SurfaceSummary) -> serde_json::Value {
+    let mut row = serde_json::Map::new();
+    row.insert(
+        "id".to_string(),
+        serde_json::Value::String(surface.surface_id.clone()),
+    );
+    row.insert(
+        "ref".to_string(),
+        serde_json::Value::String(surface_ref(&surface.surface_id)),
+    );
+    row.insert(
+        "surface_id".to_string(),
+        serde_json::Value::String(surface.surface_id.clone()),
+    );
+    row.insert(
+        "surface_ref".to_string(),
+        serde_json::Value::String(surface_ref(&surface.surface_id)),
+    );
+    row.insert(
+        "pane_id".to_string(),
+        serde_json::Value::String(surface.pane_id.to_string()),
+    );
+    row.insert(
+        "pane_ref".to_string(),
+        serde_json::Value::String(pane_ref(surface.pane_id)),
+    );
+    row.insert(
+        "title".to_string(),
+        serde_json::Value::String(surface.title.clone()),
+    );
+    row.insert("selected".to_string(), serde_json::Value::Bool(surface.selected));
+    if let Some(uri) = surface.uri.filter(|uri| !uri.is_empty()) {
+        row.insert("url".to_string(), serde_json::Value::String(uri.clone()));
+        row.insert("uri".to_string(), serde_json::Value::String(uri));
+    }
+    serde_json::Value::Object(row)
+}
+
+fn browser_tab_payload(workspace_id: &str, surface: pane::SurfaceSummary) -> serde_json::Value {
+    let surface_id = surface.surface_id.clone();
+    let mut payload = serde_json::Map::new();
+    payload.insert(
+        "workspace_id".to_string(),
+        serde_json::Value::String(workspace_id.to_string()),
+    );
+    payload.insert(
+        "workspace_ref".to_string(),
+        serde_json::Value::String(workspace_ref(workspace_id)),
+    );
+    payload.insert(
+        "surface_id".to_string(),
+        serde_json::Value::String(surface_id.clone()),
+    );
+    payload.insert(
+        "surface_ref".to_string(),
+        serde_json::Value::String(surface_ref(&surface_id)),
+    );
+    payload.insert(
+        "pane_id".to_string(),
+        serde_json::Value::String(surface.pane_id.to_string()),
+    );
+    payload.insert(
+        "pane_ref".to_string(),
+        serde_json::Value::String(pane_ref(surface.pane_id)),
+    );
+    payload.insert("ok".to_string(), serde_json::Value::Bool(true));
+    payload.insert("tab".to_string(), browser_tab_row(surface));
+    serde_json::Value::Object(payload)
+}
+
 fn browser_control_payload(
     workspace_id: &str,
     surface_id: &str,
@@ -4343,6 +4413,123 @@ fn handle_control_command(state: &State, command: ControlCommand) {
 
             let payload = browser_control_payload(&workspace_id, &surface_id, &handle);
             let _ = reply.send(Ok(payload));
+        }
+        ControlCommand::BrowserTab {
+            target,
+            surface_hint,
+            action,
+            target_surface_id,
+            url,
+            reply,
+        } => {
+            let resolved = {
+                let app_state = state.borrow();
+                workspace_index_for_target(&app_state, &target)
+            };
+
+            let Some(index) = resolved else {
+                let _ = reply.send(Err(crate::control_bridge::BridgeError::not_found(
+                    "workspace not found",
+                )));
+                return;
+            };
+
+            let (workspace_id, workspace_root) = {
+                let app_state = state.borrow();
+                let workspace = &app_state.workspaces[index];
+                (workspace.id.clone(), workspace.root.clone())
+            };
+
+            match action.as_str() {
+                "list" => {
+                    let tabs = pane::browser_tab_summaries_for_root(&workspace_root);
+                    let current_surface_id = tabs
+                        .iter()
+                        .find(|tab| tab.selected)
+                        .or_else(|| tabs.first())
+                        .map(|tab| tab.surface_id.clone());
+                    let rows = tabs.into_iter().map(browser_tab_row).collect::<Vec<_>>();
+                    let mut payload = serde_json::Map::new();
+                    payload.insert(
+                        "workspace_id".to_string(),
+                        serde_json::Value::String(workspace_id.clone()),
+                    );
+                    payload.insert(
+                        "workspace_ref".to_string(),
+                        serde_json::Value::String(workspace_ref(&workspace_id)),
+                    );
+                    payload.insert("tabs".to_string(), serde_json::Value::Array(rows));
+                    if let Some(current_surface_id) = current_surface_id {
+                        payload.insert(
+                            "current_surface_id".to_string(),
+                            serde_json::Value::String(current_surface_id.clone()),
+                        );
+                        payload.insert(
+                            "current_surface_ref".to_string(),
+                            serde_json::Value::String(surface_ref(&current_surface_id)),
+                        );
+                    }
+                    let _ = reply.send(Ok(serde_json::Value::Object(payload)));
+                }
+                "new" => {
+                    let Some(surface) = pane::add_browser_tab_for_root(
+                        &workspace_root,
+                        surface_hint.as_deref(),
+                        url.as_deref(),
+                    ) else {
+                        let _ = reply.send(Err(crate::control_bridge::BridgeError::not_found(
+                            "browser tab source not found",
+                        )));
+                        return;
+                    };
+                    let _ = reply.send(Ok(browser_tab_payload(&workspace_id, surface)));
+                }
+                "switch" => {
+                    let Some(target_surface_id) = target_surface_id else {
+                        let _ = reply.send(Err(crate::control_bridge::BridgeError::invalid_params(
+                            "browser.tab.switch requires target_surface_id",
+                        )));
+                        return;
+                    };
+                    let Some(surface) =
+                        pane::switch_browser_tab_in_root(&workspace_root, &target_surface_id)
+                    else {
+                        let _ = reply.send(Err(crate::control_bridge::BridgeError::not_found(
+                            "browser tab not found",
+                        )));
+                        return;
+                    };
+                    let _ = reply.send(Ok(browser_tab_payload(&workspace_id, surface)));
+                }
+                "close" => {
+                    let Some(target_surface_id) = target_surface_id else {
+                        let _ = reply.send(Err(crate::control_bridge::BridgeError::invalid_params(
+                            "browser.tab.close requires target_surface_id",
+                        )));
+                        return;
+                    };
+                    match pane::close_browser_tab_in_root(&workspace_root, &target_surface_id) {
+                        Ok(surface) => {
+                            let _ = reply.send(Ok(browser_tab_payload(&workspace_id, surface)));
+                        }
+                        Err(pane::BrowserTabCloseError::LastBrowserTab) => {
+                            let _ = reply.send(Err(crate::control_bridge::BridgeError::conflict(
+                                "cannot close last tab",
+                            )));
+                        }
+                        Err(pane::BrowserTabCloseError::NotFound) => {
+                            let _ = reply.send(Err(crate::control_bridge::BridgeError::not_found(
+                                "browser tab not found",
+                            )));
+                        }
+                    }
+                }
+                _ => {
+                    let _ = reply.send(Err(crate::control_bridge::BridgeError::invalid_params(
+                        format!("unsupported browser.tab action: {action}"),
+                    )));
+                }
+            }
         }
         ControlCommand::BrowserGet {
             target,

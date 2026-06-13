@@ -1751,15 +1751,17 @@ fn restore_tabs_from_state(
                     agent: agent.clone(),
                 }),
             ),
-            TabContentState::Browser { uri } => add_browser_tab_inner(
-                internals,
-                Some(BrowserTabOptions {
-                    id: Some(saved_tab.id.as_str()),
-                    custom_name: saved_tab.custom_name.as_deref(),
-                    pinned: saved_tab.pinned,
-                    uri: uri.as_deref(),
-                }),
-            ),
+            TabContentState::Browser { uri } => {
+                add_browser_tab_inner(
+                    internals,
+                    Some(BrowserTabOptions {
+                        id: Some(saved_tab.id.as_str()),
+                        custom_name: saved_tab.custom_name.as_deref(),
+                        pinned: saved_tab.pinned,
+                        uri: uri.as_deref(),
+                    }),
+                );
+            }
             TabContentState::Keybinds {} => add_keybind_editor_tab_inner(
                 internals,
                 KeybindsTabInput {
@@ -2083,7 +2085,10 @@ fn add_terminal_tab_inner(
     }
 }
 
-fn add_browser_tab_inner(internals: &Rc<PaneInternals>, options: Option<BrowserTabOptions<'_>>) {
+fn add_browser_tab_inner(
+    internals: &Rc<PaneInternals>,
+    options: Option<BrowserTabOptions<'_>>,
+) -> String {
     let tab_id = options
         .as_ref()
         .and_then(|value| value.id.map(|id| id.to_string()))
@@ -2157,6 +2162,7 @@ fn add_browser_tab_inner(internals: &Rc<PaneInternals>, options: Option<BrowserT
     if options.is_none() {
         (internals.callbacks.on_state_changed)();
     }
+    tab_id
 }
 
 fn add_keybind_editor_tab_inner(internals: &Rc<PaneInternals>, input: KeybindsTabInput<'_>) {
@@ -2615,6 +2621,164 @@ pub(crate) fn browser_handle_for_root(
             let pane_widget: gtk::Widget = internals.pane_outer.clone().upcast();
             browser_handle_for_surface(&pane_widget, None)
         })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BrowserTabCloseError {
+    NotFound,
+    LastBrowserTab,
+}
+
+pub(crate) fn browser_tab_summaries_for_root(root: &gtk::Widget) -> Vec<SurfaceSummary> {
+    surface_summaries_for_root(root)
+        .into_iter()
+        .filter(|surface| surface.kind == "browser")
+        .collect()
+}
+
+fn browser_pane_for_root(
+    root: &gtk::Widget,
+    surface_hint: Option<&str>,
+) -> Option<Rc<PaneInternals>> {
+    let requested = surface_hint
+        .map(normalize_surface_hint)
+        .filter(|value| !value.is_empty());
+    let panes = pane_internals_for_root(root);
+
+    if let Some(requested) = requested {
+        return panes.into_iter().find(|internals| {
+            let pane_id = internals.pane_id;
+            internals.tab_state.borrow().tabs.iter().any(|entry| {
+                matches!(&entry.kind, TabKind::Browser { .. })
+                    && surface_hint_matches(
+                        &composite_surface_id(pane_id, &entry.id),
+                        &entry.id,
+                        requested,
+                    )
+            })
+        });
+    }
+
+    panes.into_iter().find(|internals| {
+        internals
+            .tab_state
+            .borrow()
+            .tabs
+            .iter()
+            .any(|entry| matches!(&entry.kind, TabKind::Browser { .. }))
+    })
+}
+
+pub(crate) fn add_browser_tab_for_root(
+    root: &gtk::Widget,
+    source_surface_hint: Option<&str>,
+    uri: Option<&str>,
+) -> Option<SurfaceSummary> {
+    let requested = source_surface_hint
+        .map(normalize_surface_hint)
+        .filter(|value| !value.is_empty());
+    let internals = if requested.is_some() {
+        browser_pane_for_root(root, requested)
+    } else {
+        browser_pane_for_root(root, None)
+            .or_else(|| pane_internals_for_root(root).into_iter().next())
+    }?;
+    let options = Some(BrowserTabOptions {
+        id: None,
+        custom_name: None,
+        pinned: false,
+        uri,
+    });
+    let tab_id = add_browser_tab_inner(&internals, options);
+    (internals.callbacks.on_state_changed)();
+    let surface_id = composite_surface_id(internals.pane_id, &tab_id);
+    browser_tab_summaries_for_root(root)
+        .into_iter()
+        .find(|surface| surface.surface_id == surface_id)
+}
+
+pub(crate) fn switch_browser_tab_in_root(
+    root: &gtk::Widget,
+    target_surface_hint: &str,
+) -> Option<SurfaceSummary> {
+    let requested = normalize_surface_hint(target_surface_hint);
+    let internals = browser_pane_for_root(root, Some(requested))?;
+    let tab_id = {
+        let tab_state = internals.tab_state.borrow();
+        tab_state.tabs.iter().find_map(|entry| {
+            if !matches!(&entry.kind, TabKind::Browser { .. }) {
+                return None;
+            }
+            let surface_id = composite_surface_id(internals.pane_id, &entry.id);
+            surface_hint_matches(&surface_id, &entry.id, requested).then(|| entry.id.clone())
+        })?
+    };
+    activate_tab(
+        &internals.tab_strip,
+        &internals.content_stack,
+        &internals.tab_state,
+        &tab_id,
+    );
+    (internals.callbacks.on_state_changed)();
+    let surface_id = composite_surface_id(internals.pane_id, &tab_id);
+    browser_tab_summaries_for_root(root)
+        .into_iter()
+        .find(|surface| surface.surface_id == surface_id)
+}
+
+pub(crate) fn close_browser_tab_in_root(
+    root: &gtk::Widget,
+    target_surface_hint: &str,
+) -> Result<SurfaceSummary, BrowserTabCloseError> {
+    if browser_tab_summaries_for_root(root).len() <= 1 {
+        return Err(BrowserTabCloseError::LastBrowserTab);
+    }
+
+    let requested = normalize_surface_hint(target_surface_hint);
+    let internals =
+        browser_pane_for_root(root, Some(requested)).ok_or(BrowserTabCloseError::NotFound)?;
+    let (tab_id, surface) = {
+        let tab_state = internals.tab_state.borrow();
+        let Some(entry) = tab_state.tabs.iter().find(|entry| {
+            matches!(&entry.kind, TabKind::Browser { .. })
+                && surface_hint_matches(
+                    &composite_surface_id(internals.pane_id, &entry.id),
+                    &entry.id,
+                    requested,
+                )
+        }) else {
+            return Err(BrowserTabCloseError::NotFound);
+        };
+        let surface_id = composite_surface_id(internals.pane_id, &entry.id);
+        let active_tab = tab_state.active_tab.as_deref();
+        let uri = match &entry.kind {
+            TabKind::Browser { state } => state.uri.borrow().clone(),
+            _ => None,
+        };
+        (
+            entry.id.clone(),
+            SurfaceSummary {
+                pane_id: internals.pane_id,
+                surface_id,
+                title: entry.title_label.label().to_string(),
+                kind: "browser".to_string(),
+                selected: active_tab == Some(entry.id.as_str()),
+                cwd: None,
+                uri,
+            },
+        )
+    };
+
+    remove_tab(
+        &internals.tab_strip,
+        &internals.content_stack,
+        &internals.tab_state,
+        &tab_id,
+        &internals.callbacks,
+        &internals.pane_outer,
+        PaneEmptyReason::ClosedLastTab,
+    );
+    Ok(surface)
 }
 
 pub fn terminal_handle_for_root(

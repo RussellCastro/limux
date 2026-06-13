@@ -77,6 +77,10 @@ const METHODS: &[&str] = &[
     "browser.storage.get",
     "browser.storage.set",
     "browser.storage.clear",
+    "browser.tab.list",
+    "browser.tab.new",
+    "browser.tab.switch",
+    "browser.tab.close",
     "notification.create",
 ];
 
@@ -256,6 +260,14 @@ pub enum ControlCommand {
         storage_type: Option<String>,
         reply: mpsc::Sender<BridgeResult>,
     },
+    BrowserTab {
+        target: WorkspaceTarget,
+        surface_hint: Option<String>,
+        action: String,
+        target_surface_id: Option<String>,
+        url: Option<String>,
+        reply: mpsc::Sender<BridgeResult>,
+    },
     ListSurfaces {
         target: WorkspaceTarget,
         reply: mpsc::Sender<BridgeResult>,
@@ -335,6 +347,7 @@ impl ControlCommand {
             | Self::BrowserFill { reply, .. }
             | Self::BrowserAction { reply, .. }
             | Self::BrowserData { reply, .. }
+            | Self::BrowserTab { reply, .. }
             | Self::ListSurfaces { reply, .. }
             | Self::SurfaceHealth { reply, .. }
             | Self::ReadSurfaceText { reply, .. }
@@ -1076,6 +1089,51 @@ fn handle_method(
                     key,
                     value,
                     storage_type,
+                    reply,
+                },
+                rx,
+            )
+        }
+        "browser.tab.list" | "browser.tab.new" | "browser.tab.switch" | "browser.tab.close" => {
+            let action = method.trim_start_matches("browser.tab.").to_string();
+            let target = match parse_optional_workspace_target(params, true) {
+                Ok(target) => target,
+                Err(error) => return error_response(id, error),
+            };
+            let surface_hint =
+                match optional_ref_handle(params, &["surface_id", "id"], "surface:") {
+                    Ok(surface_hint) => surface_hint,
+                    Err(error) => return error_response(id, error),
+                };
+            let target_surface_id = match optional_ref_handle(
+                params,
+                &["target_surface_id", "target_id", "tab_id"],
+                "surface:",
+            ) {
+                Ok(target_surface_id) => target_surface_id,
+                Err(error) => return error_response(id, error),
+            };
+            let target_surface_id = target_surface_id.or_else(|| {
+                matches!(action.as_str(), "switch" | "close")
+                    .then(|| surface_hint.clone())
+                    .flatten()
+            });
+            if matches!(action.as_str(), "switch" | "close") && target_surface_id.is_none() {
+                return error_response(
+                    id,
+                    BridgeError::invalid_params(format!(
+                        "browser.tab.{action} requires target_surface_id"
+                    )),
+                );
+            }
+            let (reply, rx) = mpsc::channel();
+            (
+                ControlCommand::BrowserTab {
+                    target,
+                    surface_hint,
+                    action,
+                    target_surface_id,
+                    url: optional_string(params, &["url"]),
                     reply,
                 },
                 rx,
@@ -1926,6 +1984,63 @@ mod tests {
         );
         assert_eq!(storage_response.error, None);
         assert_eq!(storage_response.result.expect("result")["value"], "secret");
+    }
+
+    #[test]
+    fn browser_tab_routes_require_targets_and_accept_surface_refs() {
+        let missing_target = dispatch_request(
+            r#"{"id":1,"method":"browser.tab.switch","params":{}}"#,
+            &|command| panic!("invalid browser.tab.switch should not dispatch: {command:?}"),
+        );
+        assert_eq!(missing_target.result, None);
+        assert_eq!(
+            missing_target.error.as_ref().map(|error| error.code),
+            Some(INVALID_PARAMS_CODE)
+        );
+
+        let new_response = dispatch_request(
+            r#"{"id":2,"method":"browser.tab.new","params":{"surface_id":"surface:9:tab","url":"https://example.com"}}"#,
+            &|command| match command {
+                ControlCommand::BrowserTab {
+                    target,
+                    surface_hint,
+                    action,
+                    target_surface_id,
+                    url,
+                    reply,
+                } => {
+                    assert_eq!(target, WorkspaceTarget::Active);
+                    assert_eq!(surface_hint, Some("9:tab".to_string()));
+                    assert_eq!(action, "new");
+                    assert_eq!(target_surface_id, None);
+                    assert_eq!(url, Some("https://example.com".to_string()));
+                    let _ = reply.send(Ok(json!({ "surface_id": "9:new-tab" })));
+                }
+                other => panic!("unexpected command: {other:?}"),
+            },
+        );
+        assert_eq!(new_response.error, None);
+        assert_eq!(new_response.result.expect("result")["surface_id"], "9:new-tab");
+
+        let close_response = dispatch_request(
+            r#"{"id":3,"method":"browser.tab.close","params":{"surface_id":"surface:9:tab","target_surface_id":"surface:9:other"}}"#,
+            &|command| match command {
+                ControlCommand::BrowserTab {
+                    action,
+                    surface_hint,
+                    target_surface_id,
+                    reply,
+                    ..
+                } => {
+                    assert_eq!(action, "close");
+                    assert_eq!(surface_hint, Some("9:tab".to_string()));
+                    assert_eq!(target_surface_id, Some("9:other".to_string()));
+                    let _ = reply.send(Ok(json!({ "ok": true })));
+                }
+                other => panic!("unexpected command: {other:?}"),
+            },
+        );
+        assert_eq!(close_response.error, None);
     }
 
     #[test]
