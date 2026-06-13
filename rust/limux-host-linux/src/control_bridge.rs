@@ -71,6 +71,12 @@ const METHODS: &[&str] = &[
     "browser.press",
     "browser.keydown",
     "browser.keyup",
+    "browser.cookies.get",
+    "browser.cookies.set",
+    "browser.cookies.clear",
+    "browser.storage.get",
+    "browser.storage.set",
+    "browser.storage.clear",
     "notification.create",
 ];
 
@@ -240,6 +246,16 @@ pub enum ControlCommand {
         dy: Option<u64>,
         reply: mpsc::Sender<BridgeResult>,
     },
+    BrowserData {
+        target: WorkspaceTarget,
+        surface_hint: Option<String>,
+        action: String,
+        name: Option<String>,
+        key: Option<String>,
+        value: Option<String>,
+        storage_type: Option<String>,
+        reply: mpsc::Sender<BridgeResult>,
+    },
     ListSurfaces {
         target: WorkspaceTarget,
         reply: mpsc::Sender<BridgeResult>,
@@ -318,6 +334,7 @@ impl ControlCommand {
             | Self::BrowserClick { reply, .. }
             | Self::BrowserFill { reply, .. }
             | Self::BrowserAction { reply, .. }
+            | Self::BrowserData { reply, .. }
             | Self::ListSurfaces { reply, .. }
             | Self::SurfaceHealth { reply, .. }
             | Self::ReadSurfaceText { reply, .. }
@@ -1000,6 +1017,65 @@ fn handle_method(
                     value,
                     key,
                     dy,
+                    reply,
+                },
+                rx,
+            )
+        }
+        "browser.cookies.get"
+        | "browser.cookies.set"
+        | "browser.cookies.clear"
+        | "browser.storage.get"
+        | "browser.storage.set"
+        | "browser.storage.clear" => {
+            let action = method.trim_start_matches("browser.").to_string();
+            let name = optional_string(params, &["name"]);
+            let key = optional_string(params, &["key"]);
+            let value = optional_raw_string(params, &["value"]);
+            let storage_type = optional_string(params, &["type", "storage_type"]);
+            if action == "cookies.set" && name.is_none() {
+                return error_response(
+                    id,
+                    BridgeError::invalid_params("browser.cookies.set requires name"),
+                );
+            }
+            if action == "cookies.set" && value.is_none() {
+                return error_response(
+                    id,
+                    BridgeError::invalid_params("browser.cookies.set requires value"),
+                );
+            }
+            if matches!(action.as_str(), "storage.get" | "storage.set") && key.is_none() {
+                return error_response(
+                    id,
+                    BridgeError::invalid_params(format!("browser.{action} requires key")),
+                );
+            }
+            if action == "storage.set" && value.is_none() {
+                return error_response(
+                    id,
+                    BridgeError::invalid_params("browser.storage.set requires value"),
+                );
+            }
+            let target = match parse_optional_workspace_target(params, true) {
+                Ok(target) => target,
+                Err(error) => return error_response(id, error),
+            };
+            let surface_hint =
+                match optional_ref_handle(params, &["surface_id", "id"], "surface:") {
+                    Ok(surface_hint) => surface_hint,
+                    Err(error) => return error_response(id, error),
+                };
+            let (reply, rx) = mpsc::channel();
+            (
+                ControlCommand::BrowserData {
+                    target,
+                    surface_hint,
+                    action,
+                    name,
+                    key,
+                    value,
+                    storage_type,
                     reply,
                 },
                 rx,
@@ -1788,6 +1864,68 @@ mod tests {
         );
         assert_eq!(key_response.error, None);
         assert_eq!(key_response.result.expect("result")["key"], "Enter");
+    }
+
+    #[test]
+    fn browser_data_routes_require_required_fields_and_accept_surface_refs() {
+        let missing_key = dispatch_request(
+            r#"{"id":1,"method":"browser.storage.get","params":{"surface_id":"surface:9:tab"}}"#,
+            &|command| panic!("invalid browser.storage.get should not dispatch: {command:?}"),
+        );
+        assert_eq!(missing_key.result, None);
+        assert_eq!(
+            missing_key.error.as_ref().map(|error| error.code),
+            Some(INVALID_PARAMS_CODE)
+        );
+
+        let cookie_response = dispatch_request(
+            r#"{"id":2,"method":"browser.cookies.set","params":{"surface_id":"surface:9:tab","name":"sid","value":"abc 123"}}"#,
+            &|command| match command {
+                ControlCommand::BrowserData {
+                    target,
+                    surface_hint,
+                    action,
+                    name,
+                    key,
+                    value,
+                    storage_type,
+                    reply,
+                } => {
+                    assert_eq!(target, WorkspaceTarget::Active);
+                    assert_eq!(surface_hint, Some("9:tab".to_string()));
+                    assert_eq!(action, "cookies.set");
+                    assert_eq!(name, Some("sid".to_string()));
+                    assert_eq!(key, None);
+                    assert_eq!(value, Some("abc 123".to_string()));
+                    assert_eq!(storage_type, None);
+                    let _ = reply.send(Ok(json!({ "ok": true, "name": name, "value": value })));
+                }
+                other => panic!("unexpected command: {other:?}"),
+            },
+        );
+        assert_eq!(cookie_response.error, None);
+        assert_eq!(cookie_response.result.expect("result")["name"], "sid");
+
+        let storage_response = dispatch_request(
+            r#"{"id":3,"method":"browser.storage.get","params":{"surface_id":"surface:9:tab","type":"session","key":"token"}}"#,
+            &|command| match command {
+                ControlCommand::BrowserData {
+                    action,
+                    key,
+                    storage_type,
+                    reply,
+                    ..
+                } => {
+                    assert_eq!(action, "storage.get");
+                    assert_eq!(key, Some("token".to_string()));
+                    assert_eq!(storage_type, Some("session".to_string()));
+                    let _ = reply.send(Ok(json!({ "value": "secret" })));
+                }
+                other => panic!("unexpected command: {other:?}"),
+            },
+        );
+        assert_eq!(storage_response.error, None);
+        assert_eq!(storage_response.result.expect("result")["value"], "secret");
     }
 
     #[test]

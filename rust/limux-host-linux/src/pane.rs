@@ -587,6 +587,99 @@ fn browser_wait_script(selector: Option<&str>) -> String {
 
 
 #[cfg(feature = "webkit")]
+fn browser_data_script(
+    method: &str,
+    name: Option<&str>,
+    key: Option<&str>,
+    value: Option<&str>,
+    storage_type: Option<&str>,
+) -> String {
+    let method = serde_json::to_string(method).unwrap_or_else(|_| "\"\"".to_string());
+    let name = match name {
+        Some(name) => serde_json::to_string(name).unwrap_or_else(|_| "null".to_string()),
+        None => "null".to_string(),
+    };
+    let key = match key {
+        Some(key) => serde_json::to_string(key).unwrap_or_else(|_| "null".to_string()),
+        None => "null".to_string(),
+    };
+    let value = match value {
+        Some(value) => serde_json::to_string(value).unwrap_or_else(|_| "null".to_string()),
+        None => "null".to_string(),
+    };
+    let storage_type = match storage_type {
+        Some(storage_type) => {
+            serde_json::to_string(storage_type).unwrap_or_else(|_| "null".to_string())
+        }
+        None => "null".to_string(),
+    };
+    format!(
+        r#"
+(() => {{
+  const method = {method};
+  const name = {name};
+  const key = {key};
+  const value = {value};
+  const storageType = {storage_type} || 'local';
+  const decode = (raw) => {{
+    try {{ return decodeURIComponent(raw); }} catch (_) {{ return raw; }}
+  }};
+  const cookieRows = () => {{
+    const raw = document.cookie || '';
+    if (!raw.trim()) return [];
+    return raw.split(';').map((entry) => {{
+      const [rawName, ...rest] = entry.trim().split('=');
+      return {{ name: decode(rawName || ''), value: decode(rest.join('=')) }};
+    }}).filter((row) => row.name);
+  }};
+  try {{
+    if (method === 'cookies.get') {{
+      const rows = name == null ? cookieRows() : cookieRows().filter((row) => row.name === name);
+      return JSON.stringify({{ ok: true, cookies: rows }});
+    }}
+    if (method === 'cookies.set') {{
+      if (!name) return JSON.stringify({{ ok: false, error: 'browser.cookies.set requires name' }});
+      if (value == null) return JSON.stringify({{ ok: false, error: 'browser.cookies.set requires value' }});
+      document.cookie = `${{encodeURIComponent(name)}}=${{encodeURIComponent(value)}}; path=/`;
+      return JSON.stringify({{ ok: true, name, value }});
+    }}
+    if (method === 'cookies.clear') {{
+      const names = name == null ? cookieRows().map((row) => row.name) : [name];
+      for (const item of names) {{
+        document.cookie = `${{encodeURIComponent(item)}}=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/`;
+      }}
+      return JSON.stringify({{ ok: true }});
+    }}
+
+    const storage = storageType === 'session' ? window.sessionStorage : window.localStorage;
+    if (method === 'storage.get') {{
+      if (!key) return JSON.stringify({{ ok: false, error: 'browser.storage.get requires key' }});
+      return JSON.stringify({{ ok: true, value: storage.getItem(key) }});
+    }}
+    if (method === 'storage.set') {{
+      if (!key) return JSON.stringify({{ ok: false, error: 'browser.storage.set requires key' }});
+      if (value == null) return JSON.stringify({{ ok: false, error: 'browser.storage.set requires value' }});
+      storage.setItem(key, value);
+      return JSON.stringify({{ ok: true, key, value }});
+    }}
+    if (method === 'storage.clear') {{
+      if (key) {{
+        storage.removeItem(key);
+      }} else {{
+        storage.clear();
+      }}
+      return JSON.stringify({{ ok: true }});
+    }}
+    return JSON.stringify({{ ok: false, error: `unsupported browser data command: ${{method}}` }});
+  }} catch (error) {{
+    return JSON.stringify({{ ok: false, error: String(error && error.message ? error.message : error) }});
+  }}
+}})()
+"#
+    )
+}
+
+#[cfg(feature = "webkit")]
 fn browser_action_script(
     method: &str,
     selector: Option<&str>,
@@ -3698,6 +3791,19 @@ impl BrowserControlHandle {
         self.handles
             .action(method, selector, text, value, key, dy, on_result)
     }
+
+    pub(crate) fn data(
+        &self,
+        method: String,
+        name: Option<String>,
+        key: Option<String>,
+        value: Option<String>,
+        storage_type: Option<String>,
+        on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
+    ) {
+        self.handles
+            .data(method, name, key, value, storage_type, on_result)
+    }
 }
 
 #[cfg(feature = "webkit")]
@@ -3900,6 +4006,27 @@ impl BrowserHandles {
                 dy,
             ),
             move |result| parse_browser_json_result("browser.action", result, on_result),
+        );
+    }
+
+    fn data(
+        &self,
+        method: String,
+        name: Option<String>,
+        key: Option<String>,
+        value: Option<String>,
+        storage_type: Option<String>,
+        on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
+    ) {
+        self.evaluate_javascript(
+            browser_data_script(
+                &method,
+                name.as_deref(),
+                key.as_deref(),
+                value.as_deref(),
+                storage_type.as_deref(),
+            ),
+            move |result| parse_browser_json_result("browser.data", result, on_result),
         );
     }
 
@@ -4115,6 +4242,18 @@ impl BrowserHandles {
         on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
     ) {
         on_result(Err("browser action commands require WebKit support".to_string()));
+    }
+
+    fn data(
+        &self,
+        _method: String,
+        _name: Option<String>,
+        _key: Option<String>,
+        _value: Option<String>,
+        _storage_type: Option<String>,
+        on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
+    ) {
+        on_result(Err("browser data commands require WebKit support".to_string()));
     }
 
     fn focus_location(&self) -> bool {

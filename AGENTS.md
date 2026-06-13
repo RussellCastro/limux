@@ -78,9 +78,9 @@ surface, terminal send/key/read/health, notification, and terminal pane-create
 commands. The live browser bridge has a small first slice for open-split,
 navigate, URL/title/get lookup, basic JS eval, DOM/ARIA snapshot/find,
 selector or `@eN` ref click/fill/type/select/check/focus/hover/dblclick,
-scroll/scroll-into-view, key actions, and immediate wait checks; screenshots,
-polling waits, cookies/storage, tab lifecycle, full accessibility-tree parity,
-and frame-stable refs remain separate work. Check
+scroll/scroll-into-view, key actions, page-level cookies/storage commands, and
+immediate wait checks; screenshots, polling waits, tab lifecycle, full
+accessibility-tree parity, and frame-stable refs remain separate work. Check
 `docs/cmux-parity-plan.md` before changing agent or browser automation.
 For cmux-compatibility work, also update `docs/cmux-parity-contract.md`;
 `./scripts/check-cmux-parity.sh` fails if a required cmux capability is no
