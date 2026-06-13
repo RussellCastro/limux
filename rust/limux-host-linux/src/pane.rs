@@ -2958,6 +2958,14 @@ impl BrowserControlHandle {
         *self.uri.borrow_mut() = Some(url.to_string());
         self.handles.navigate(url)
     }
+
+    pub(crate) fn evaluate_javascript(
+        &self,
+        script: String,
+        on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
+    ) {
+        self.handles.evaluate_javascript(script, on_result)
+    }
 }
 
 #[cfg(feature = "webkit")]
@@ -2998,6 +3006,30 @@ impl BrowserHandles {
         self.url_entry.set_text(url);
         self.webview.load_uri(url);
         true
+    }
+
+    fn evaluate_javascript(
+        &self,
+        script: String,
+        on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
+    ) {
+        self.webview.evaluate_javascript(
+            &script,
+            None,
+            None,
+            None::<&gtk::gio::Cancellable>,
+            move |result| match result {
+                Ok(value) => {
+                    let value = if value.is_boolean() {
+                        serde_json::Value::Bool(value.to_boolean())
+                    } else {
+                        serde_json::Value::String(value.to_str().to_string())
+                    };
+                    on_result(Ok(value));
+                }
+                Err(error) => on_result(Err(error.to_string())),
+            },
+        );
     }
 
     fn focus_location(&self) -> bool {
@@ -3142,6 +3174,14 @@ impl BrowserHandles {
 
     fn navigate(&self, _url: &str) -> bool {
         false
+    }
+
+    fn evaluate_javascript(
+        &self,
+        _script: String,
+        on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
+    ) {
+        on_result(Err("browser.eval requires WebKit support".to_string()));
     }
 
     fn focus_location(&self) -> bool {

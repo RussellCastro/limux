@@ -37,6 +37,7 @@ const METHODS: &[&str] = &[
     "browser.navigate",
     "browser.url.get",
     "browser.get.title",
+    "browser.eval",
     "notification.create",
 ];
 
@@ -149,6 +150,12 @@ pub enum ControlCommand {
         surface_hint: Option<String>,
         reply: mpsc::Sender<BridgeResult>,
     },
+    BrowserEval {
+        target: WorkspaceTarget,
+        surface_hint: Option<String>,
+        script: String,
+        reply: mpsc::Sender<BridgeResult>,
+    },
     ListSurfaces {
         target: WorkspaceTarget,
         reply: mpsc::Sender<BridgeResult>,
@@ -219,6 +226,7 @@ impl ControlCommand {
             | Self::BrowserNavigate { reply, .. }
             | Self::BrowserUrlGet { reply, .. }
             | Self::BrowserTitleGet { reply, .. }
+            | Self::BrowserEval { reply, .. }
             | Self::ListSurfaces { reply, .. }
             | Self::SurfaceHealth { reply, .. }
             | Self::ReadSurfaceText { reply, .. }
@@ -614,6 +622,33 @@ fn handle_method(
                 ControlCommand::BrowserTitleGet {
                     target,
                     surface_hint,
+                    reply,
+                },
+                rx,
+            )
+        }
+        "browser.eval" => {
+            let Some(script) = optional_string(params, &["script"]) else {
+                return error_response(
+                    id,
+                    BridgeError::invalid_params("browser.eval requires script"),
+                );
+            };
+            let target = match parse_optional_workspace_target(params, true) {
+                Ok(target) => target,
+                Err(error) => return error_response(id, error),
+            };
+            let surface_hint =
+                match optional_ref_handle(params, &["surface_id", "id"], "surface:") {
+                    Ok(surface_hint) => surface_hint,
+                    Err(error) => return error_response(id, error),
+                };
+            let (reply, rx) = mpsc::channel();
+            (
+                ControlCommand::BrowserEval {
+                    target,
+                    surface_hint,
+                    script,
                     reply,
                 },
                 rx,
@@ -1146,6 +1181,40 @@ mod tests {
             response.error.as_ref().map(|error| error.code),
             Some(INVALID_PARAMS_CODE)
         );
+    }
+
+    #[test]
+    fn browser_eval_route_requires_script_and_accepts_surface_refs() {
+        let missing_script = dispatch_request(
+            r#"{"id":1,"method":"browser.eval","params":{"surface_id":"surface:9:tab"}}"#,
+            &|command| panic!("invalid browser.eval should not dispatch: {command:?}"),
+        );
+        assert_eq!(missing_script.result, None);
+        assert_eq!(
+            missing_script.error.as_ref().map(|error| error.code),
+            Some(INVALID_PARAMS_CODE)
+        );
+
+        let response = dispatch_request(
+            r#"{"id":2,"method":"browser.eval","params":{"surface_id":"surface:9:tab","script":"document.title"}}"#,
+            &|command| match command {
+                ControlCommand::BrowserEval {
+                    target,
+                    surface_hint,
+                    script,
+                    reply,
+                } => {
+                    assert_eq!(target, WorkspaceTarget::Active);
+                    assert_eq!(surface_hint, Some("9:tab".to_string()));
+                    assert_eq!(script, "document.title");
+                    let _ = reply.send(Ok(json!({ "value": "Limux" })));
+                }
+                other => panic!("unexpected command: {other:?}"),
+            },
+        );
+
+        assert_eq!(response.error, None);
+        assert_eq!(response.result.expect("result")["value"], "Limux");
     }
 
     #[test]

@@ -3026,6 +3026,34 @@ async fn run_browser(
             let payload = browser_call(client, Some(sid), method, p).await?;
             CommandOutput::Json(payload)
         }
+        "eval" | "js" => {
+            let sid = surface
+                .clone()
+                .ok_or_else(|| anyhow!("browser eval requires a surface"))?;
+            let script = rest.join(" ");
+            if script.trim().is_empty() {
+                bail!("browser eval requires a script");
+            }
+            let payload = browser_call(client, Some(sid), "browser.eval", {
+                let mut p = Map::new();
+                p.insert("script".to_string(), Value::String(script));
+                p
+            })
+            .await?;
+            if local_json {
+                CommandOutput::Json(payload)
+            } else {
+                let value = payload.get("value").cloned().unwrap_or(Value::Null);
+                let text = match value {
+                    Value::Null => "null".to_string(),
+                    Value::Bool(value) => value.to_string(),
+                    Value::Number(value) => value.to_string(),
+                    Value::String(value) => value,
+                    other => serde_json::to_string(&other).unwrap_or_else(|_| "OK".to_string()),
+                };
+                CommandOutput::Text(text)
+            }
+        }
         "addscript" | "addinitscript" | "addstyle" => {
             let sid = surface
                 .clone()

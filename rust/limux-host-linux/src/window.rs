@@ -4344,6 +4344,56 @@ fn handle_control_command(state: &State, command: ControlCommand) {
             let payload = browser_control_payload(&workspace_id, &surface_id, &handle);
             let _ = reply.send(Ok(payload));
         }
+        ControlCommand::BrowserEval {
+            target,
+            surface_hint,
+            script,
+            reply,
+        } => {
+            let resolved = {
+                let app_state = state.borrow();
+                workspace_index_for_target(&app_state, &target)
+            };
+
+            let Some(index) = resolved else {
+                let _ = reply.send(Err(crate::control_bridge::BridgeError::not_found(
+                    "workspace not found",
+                )));
+                return;
+            };
+
+            let target = {
+                let app_state = state.borrow();
+                let workspace = &app_state.workspaces[index];
+                pane::browser_handle_for_root(&workspace.root, surface_hint.as_deref()).map(
+                    |(surface_id, handle)| (workspace.id.clone(), surface_id, handle),
+                )
+            };
+
+            let Some((workspace_id, surface_id, handle)) = target else {
+                let _ = reply.send(Err(crate::control_bridge::BridgeError::not_found(
+                    "browser surface not found",
+                )));
+                return;
+            };
+
+            let payload = browser_control_payload(&workspace_id, &surface_id, &handle);
+            handle.evaluate_javascript(script, move |result| match result {
+                Ok(value) => {
+                    let mut payload = payload;
+                    if let Some(map) = payload.as_object_mut() {
+                        map.insert("value".to_string(), value);
+                        map.insert("ok".to_string(), serde_json::Value::Bool(true));
+                    }
+                    let _ = reply.send(Ok(payload));
+                }
+                Err(error) => {
+                    let _ = reply.send(Err(crate::control_bridge::BridgeError::internal(
+                        format!("browser.eval failed: {error}"),
+                    )));
+                }
+            });
+        }
         ControlCommand::ListSurfaces { target, reply } => {
             let resolved = {
                 let app_state = state.borrow();
