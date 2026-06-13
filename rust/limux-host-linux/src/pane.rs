@@ -25,6 +25,8 @@ use crate::shortcut_config::{NormalizedShortcut, ResolvedShortcutConfig, Shortcu
 use crate::terminal::{self, TerminalCallbacks};
 
 static NEXT_PANE_ID: AtomicU32 = AtomicU32::new(1);
+#[cfg(feature = "webkit")]
+const BROWSER_WAIT_POLL_INTERVAL_MS: u64 = 100;
 
 fn next_pane_id() -> u32 {
     NEXT_PANE_ID.fetch_add(1, Ordering::Relaxed)
@@ -217,6 +219,51 @@ fn parse_browser_json_result(
     on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
 ) {
     on_result(parse_browser_json_value(action, result));
+}
+
+#[cfg(feature = "webkit")]
+fn parse_browser_wait_value(
+    result: Result<serde_json::Value, String>,
+) -> Result<serde_json::Value, String> {
+    match result {
+        Ok(serde_json::Value::String(payload)) => {
+            match serde_json::from_str::<serde_json::Value>(&payload) {
+                Ok(value) => {
+                    if let Some(error) = value.get("error").and_then(serde_json::Value::as_str) {
+                        Err(error.to_string())
+                    } else {
+                        Ok(value)
+                    }
+                }
+                Err(error) => Err(format!("browser.wait returned invalid JSON: {error}")),
+            }
+        }
+        Ok(value) => Err(format!("browser.wait returned unexpected value: {value}")),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(feature = "webkit")]
+type BrowserResultCallback = Rc<RefCell<Option<Box<dyn FnOnce(Result<serde_json::Value, String>)>>>>;
+
+#[cfg(feature = "webkit")]
+#[derive(Clone)]
+struct BrowserWaitCondition {
+    selector: Option<String>,
+    text_contains: Option<String>,
+    function: Option<String>,
+    load_state: Option<String>,
+    url_contains: Option<String>,
+}
+
+#[cfg(feature = "webkit")]
+fn finish_browser_result(
+    on_result: &BrowserResultCallback,
+    result: Result<serde_json::Value, String>,
+) {
+    if let Some(on_result) = on_result.borrow_mut().take() {
+        on_result(result);
+    }
 }
 
 #[cfg(feature = "webkit")]
@@ -630,19 +677,87 @@ fn browser_get_script(kind: &str, selector: Option<&str>, name: Option<&str>) ->
 }
 
 #[cfg(feature = "webkit")]
-fn browser_wait_script(selector: Option<&str>) -> String {
-    let selector = match selector {
+fn browser_wait_script(condition: &BrowserWaitCondition) -> String {
+    let selector = match condition.selector.as_deref() {
         Some(selector) => serde_json::to_string(selector).unwrap_or_else(|_| "null".to_string()),
+        None => "null".to_string(),
+    };
+    let text_contains = match condition.text_contains.as_deref() {
+        Some(text_contains) => {
+            serde_json::to_string(text_contains).unwrap_or_else(|_| "null".to_string())
+        }
+        None => "null".to_string(),
+    };
+    let function = match condition.function.as_deref() {
+        Some(function) => serde_json::to_string(function).unwrap_or_else(|_| "null".to_string()),
+        None => "null".to_string(),
+    };
+    let load_state = match condition.load_state.as_deref() {
+        Some(load_state) => serde_json::to_string(load_state).unwrap_or_else(|_| "null".to_string()),
+        None => "null".to_string(),
+    };
+    let url_contains = match condition.url_contains.as_deref() {
+        Some(url_contains) => {
+            serde_json::to_string(url_contains).unwrap_or_else(|_| "null".to_string())
+        }
         None => "null".to_string(),
     };
     format!(
         r#"
 (() => {{
   const selector = {selector};
-  const ready = selector == null
-    ? document.readyState === 'complete' || document.readyState === 'interactive'
-    : document.querySelector(selector) !== null;
-  return JSON.stringify({{ ok: ready, ready, selector, load_state: document.readyState }});
+  const textContains = {text_contains};
+  const functionSource = {function};
+  const loadState = {load_state};
+  const urlContains = {url_contains};
+  const bodyText = () => ((document.body && (document.body.innerText || document.body.textContent)) || document.documentElement.textContent || '');
+  const checkFunction = () => {{
+    const source = String(functionSource || '').trim();
+    if (!source) return false;
+    try {{
+      const candidate = Function(`return (${{source}});`)();
+      return typeof candidate === 'function' ? !!candidate() : !!candidate;
+    }} catch (_) {{
+      return !!Function(`return Boolean(${{source}});`)();
+    }}
+  }};
+  try {{
+    let ready = false;
+    let condition = 'load_state';
+    if (selector != null) {{
+      condition = 'selector';
+      ready = document.querySelector(selector) !== null;
+    }} else if (textContains != null) {{
+      condition = 'text_contains';
+      ready = bodyText().includes(textContains);
+    }} else if (functionSource != null) {{
+      condition = 'function';
+      ready = checkFunction();
+    }} else if (loadState != null) {{
+      condition = 'load_state';
+      ready = String(document.readyState).toLowerCase() === String(loadState).toLowerCase();
+    }} else if (urlContains != null) {{
+      condition = 'url_contains';
+      ready = window.location.href.includes(urlContains);
+    }} else {{
+      ready = document.readyState === 'complete' || document.readyState === 'interactive';
+    }}
+    return JSON.stringify({{
+      ok: ready,
+      ready,
+      condition,
+      selector,
+      text_contains: textContains,
+      load_state: document.readyState,
+      url: window.location.href,
+    }});
+  }} catch (error) {{
+    return JSON.stringify({{
+      ok: false,
+      ready: false,
+      error: String(error && error.message ? error.message : error),
+    }});
+  }}
 }})()
 "#
     )
@@ -4028,9 +4143,22 @@ impl BrowserControlHandle {
     pub(crate) fn wait(
         &self,
         selector: Option<String>,
+        text_contains: Option<String>,
+        function: Option<String>,
+        load_state: Option<String>,
+        url_contains: Option<String>,
+        timeout_ms: u64,
         on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
     ) {
-        self.handles.wait(selector, on_result)
+        self.handles.wait(
+            selector,
+            text_contains,
+            function,
+            load_state,
+            url_contains,
+            timeout_ms,
+            on_result,
+        )
     }
 
     pub(crate) fn action(
@@ -4233,6 +4361,11 @@ impl BrowserHandles {
     fn wait(
         &self,
         selector: Option<String>,
+        text_contains: Option<String>,
+        function: Option<String>,
+        load_state: Option<String>,
+        url_contains: Option<String>,
+        timeout_ms: u64,
         on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
     ) {
         let selector = match selector {
@@ -4245,10 +4378,71 @@ impl BrowserHandles {
             },
             None => None,
         };
-        self.evaluate_javascript(browser_wait_script(selector.as_deref()), move |result| {
-            parse_browser_json_result("browser.wait", result, on_result)
-        });
+        let condition = BrowserWaitCondition {
+            selector,
+            text_contains,
+            function,
+            load_state,
+            url_contains,
+        };
+        let started_at = std::time::Instant::now();
+        let deadline = started_at + std::time::Duration::from_millis(timeout_ms);
+        let on_result: BrowserResultCallback = Rc::new(RefCell::new(Some(Box::new(on_result))));
+        Self::browser_wait_poll(self.clone(), condition, started_at, deadline, on_result);
     }
+
+#[cfg(feature = "webkit")]
+fn browser_wait_poll(
+    handles: BrowserHandles,
+    condition: BrowserWaitCondition,
+    started_at: std::time::Instant,
+    deadline: std::time::Instant,
+    on_result: BrowserResultCallback,
+) {
+    handles.evaluate_javascript(browser_wait_script(&condition), move |result| {
+        let now = std::time::Instant::now();
+        match parse_browser_wait_value(result) {
+            Ok(mut value) => {
+                let ready = value
+                    .get("ready")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+                if let Some(map) = value.as_object_mut() {
+                    map.insert(
+                        "elapsed_ms".to_string(),
+                        serde_json::json!(now.duration_since(started_at).as_millis() as u64),
+                    );
+                    map.insert(
+                        "timeout_ms".to_string(),
+                        serde_json::json!(deadline.duration_since(started_at).as_millis() as u64),
+                    );
+                }
+                if ready {
+                    finish_browser_result(&on_result, Ok(value));
+                } else if now >= deadline {
+                    finish_browser_result(&on_result, Err("wait condition not met".to_string()));
+                } else {
+                    let next_handles = handles.clone();
+                    let next_condition = condition.clone();
+                    let next_on_result = on_result.clone();
+                    glib::timeout_add_local_once(
+                        std::time::Duration::from_millis(BROWSER_WAIT_POLL_INTERVAL_MS),
+                        move || {
+                            Self::browser_wait_poll(
+                                next_handles,
+                                next_condition,
+                                started_at,
+                                deadline,
+                                next_on_result,
+                            );
+                        },
+                    );
+                }
+            }
+            Err(error) => finish_browser_result(&on_result, Err(error)),
+        }
+    });
+}
 
     fn action(
         &self,
@@ -4516,6 +4710,11 @@ impl BrowserHandles {
     fn wait(
         &self,
         _selector: Option<String>,
+        _text_contains: Option<String>,
+        _function: Option<String>,
+        _load_state: Option<String>,
+        _url_contains: Option<String>,
+        _timeout_ms: u64,
         on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
     ) {
         on_result(Err("browser.wait requires WebKit support".to_string()));

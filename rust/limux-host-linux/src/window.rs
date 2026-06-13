@@ -4656,6 +4656,11 @@ fn handle_control_command(state: &State, command: ControlCommand) {
             target,
             surface_hint,
             selector,
+            text_contains,
+            function,
+            load_state,
+            url_contains,
+            timeout_ms,
             reply,
         } => {
             let resolved = {
@@ -4686,24 +4691,33 @@ fn handle_control_command(state: &State, command: ControlCommand) {
             };
 
             let payload = browser_control_payload(&workspace_id, &surface_id, &handle);
-            handle.wait(selector, move |result| match result {
-                Ok(wait_result) => {
-                    let mut payload = payload;
-                    if let (Some(payload_map), Some(wait_map)) =
-                        (payload.as_object_mut(), wait_result.as_object())
-                    {
-                        for (key, value) in wait_map {
-                            payload_map.insert(key.clone(), value.clone());
+            let timeout_ms = timeout_ms.unwrap_or(5_000);
+            handle.wait(
+                selector,
+                text_contains,
+                function,
+                load_state,
+                url_contains,
+                timeout_ms,
+                move |result| match result {
+                    Ok(wait_result) => {
+                        let mut payload = payload;
+                        if let (Some(payload_map), Some(wait_map)) =
+                            (payload.as_object_mut(), wait_result.as_object())
+                        {
+                            for (key, value) in wait_map {
+                                payload_map.insert(key.clone(), value.clone());
+                            }
                         }
+                        let _ = reply.send(Ok(payload));
                     }
-                    let _ = reply.send(Ok(payload));
-                }
-                Err(error) => {
-                    let _ = reply.send(Err(crate::control_bridge::BridgeError::internal(
-                        format!("browser.wait failed: {error}"),
-                    )));
-                }
-            });
+                    Err(error) => {
+                        let _ = reply.send(Err(crate::control_bridge::BridgeError::internal(
+                            format!("browser.wait failed: {error}"),
+                        )));
+                    }
+                },
+            );
         }
         ControlCommand::BrowserEval {
             target,

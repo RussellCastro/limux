@@ -95,6 +95,10 @@ const UNKNOWN_METHOD_CODE: i64 = -32601;
 const INTERNAL_ERROR_CODE: i64 = -32603;
 const NOT_FOUND_CODE: i64 = -32004;
 const CONFLICT_CODE: i64 = -32009;
+const DEFAULT_COMMAND_TIMEOUT_SECS: u64 = 5;
+const BROWSER_WAIT_DEFAULT_TIMEOUT_MS: u64 = 5_000;
+const BROWSER_WAIT_TIMEOUT_GRACE_MS: u64 = 1_000;
+const BROWSER_WAIT_MAX_TIMEOUT_MS: u64 = 295_000;
 
 type BridgeResult = Result<Value, BridgeError>;
 
@@ -216,6 +220,11 @@ pub enum ControlCommand {
         target: WorkspaceTarget,
         surface_hint: Option<String>,
         selector: Option<String>,
+        text_contains: Option<String>,
+        function: Option<String>,
+        load_state: Option<String>,
+        url_contains: Option<String>,
+        timeout_ms: Option<u64>,
         reply: mpsc::Sender<BridgeResult>,
     },
     BrowserEval {
@@ -337,6 +346,19 @@ pub enum ControlCommand {
 }
 
 impl ControlCommand {
+    pub fn response_timeout(&self) -> Duration {
+        match self {
+            Self::BrowserWait { timeout_ms, .. } => {
+                let timeout_ms = timeout_ms
+                    .unwrap_or(BROWSER_WAIT_DEFAULT_TIMEOUT_MS)
+                    .min(BROWSER_WAIT_MAX_TIMEOUT_MS)
+                    .saturating_add(BROWSER_WAIT_TIMEOUT_GRACE_MS);
+                Duration::from_millis(timeout_ms)
+            }
+            _ => Duration::from_secs(DEFAULT_COMMAND_TIMEOUT_SECS),
+        }
+    }
+
     pub fn respond(self, result: BridgeResult) {
         match self {
             Self::Identify { reply, .. }
@@ -517,6 +539,37 @@ fn optional_index(params: &Map<String, Value>, key: &str) -> Result<Option<usize
     Err(BridgeError::invalid_params(format!(
         "{key} must be a non-negative integer"
     )))
+}
+
+fn optional_u64(params: &Map<String, Value>, keys: &[&str]) -> Result<Option<u64>, BridgeError> {
+    for key in keys {
+        let Some(value) = params.get(*key) else {
+            continue;
+        };
+        match value {
+            Value::Null => {}
+            Value::Number(number) => {
+                return number.as_u64().map(Some).ok_or_else(|| {
+                    BridgeError::invalid_params(format!("{key} must be a non-negative integer"))
+                });
+            }
+            Value::String(raw) => {
+                let raw = raw.trim();
+                if raw.is_empty() {
+                    continue;
+                }
+                return raw.parse::<u64>().map(Some).map_err(|_| {
+                    BridgeError::invalid_params(format!("{key} must be a non-negative integer"))
+                });
+            }
+            _ => {
+                return Err(BridgeError::invalid_params(format!(
+                    "{key} must be a non-negative integer"
+                )));
+            }
+        }
+    }
+    Ok(None)
 }
 
 fn looks_like_workspace_handle(raw: &str) -> bool {
@@ -832,12 +885,21 @@ fn handle_method(
                     Err(error) => return error_response(id, error),
                 };
             let selector = optional_string(params, &["selector"]);
+            let timeout_ms = match optional_u64(params, &["timeout_ms", "timeout"]) {
+                Ok(timeout_ms) => timeout_ms.map(|ms| ms.min(BROWSER_WAIT_MAX_TIMEOUT_MS)),
+                Err(error) => return error_response(id, error),
+            };
             let (reply, rx) = mpsc::channel();
             (
                 ControlCommand::BrowserWait {
                     target,
                     surface_hint,
                     selector,
+                    text_contains: optional_string(params, &["text_contains", "text"]),
+                    function: optional_raw_string(params, &["function"]),
+                    load_state: optional_string(params, &["load_state"]),
+                    url_contains: optional_string(params, &["url_contains"]),
+                    timeout_ms,
                     reply,
                 },
                 rx,
@@ -1357,10 +1419,11 @@ fn handle_method(
     };
 
     let (command, reply_rx) = queued;
+    let response_timeout = command.response_timeout();
 
     dispatch(command);
 
-    match reply_rx.recv_timeout(Duration::from_secs(5)) {
+    match reply_rx.recv_timeout(response_timeout) {
         Ok(Ok(result)) => V2Response::success(id, result),
         Ok(Err(error)) => error_response(id, error),
         Err(_) => error_response(id, BridgeError::internal("control command timed out")),
@@ -1783,11 +1846,21 @@ mod tests {
                     target,
                     surface_hint,
                     selector,
+                    text_contains,
+                    function,
+                    load_state,
+                    url_contains,
+                    timeout_ms,
                     reply,
                 } => {
                     assert_eq!(target, WorkspaceTarget::Active);
                     assert_eq!(surface_hint, Some("9:tab".to_string()));
                     assert_eq!(selector, Some("#ready".to_string()));
+                    assert_eq!(text_contains, None);
+                    assert_eq!(function, None);
+                    assert_eq!(load_state, None);
+                    assert_eq!(url_contains, None);
+                    assert_eq!(timeout_ms, None);
                     let _ = reply.send(Ok(json!({ "ok": true, "ready": true })));
                 }
                 other => panic!("unexpected command: {other:?}"),
@@ -1795,6 +1868,24 @@ mod tests {
         );
         assert_eq!(wait_response.error, None);
         assert_eq!(wait_response.result.expect("result")["ready"], true);
+
+        let timeout_response = dispatch_request(
+            r#"{"id":3,"method":"browser.wait","params":{"surface_id":"surface:9:tab","text_contains":"Ready","timeout_ms":"250"}}"#,
+            &|command| match command {
+                ControlCommand::BrowserWait {
+                    text_contains,
+                    timeout_ms,
+                    reply,
+                    ..
+                } => {
+                    assert_eq!(text_contains, Some("Ready".to_string()));
+                    assert_eq!(timeout_ms, Some(250));
+                    let _ = reply.send(Ok(json!({ "ok": true, "ready": true })));
+                }
+                other => panic!("unexpected command: {other:?}"),
+            },
+        );
+        assert_eq!(timeout_response.error, None);
     }
 
     #[test]
