@@ -4344,6 +4344,72 @@ fn handle_control_command(state: &State, command: ControlCommand) {
             }
             let _ = reply.send(Ok(payload));
         }
+        ControlCommand::BrowserControlAction {
+            target,
+            surface_hint,
+            action,
+            reply,
+        } => {
+            let resolved = {
+                let app_state = state.borrow();
+                workspace_index_for_target(&app_state, &target)
+            };
+
+            let Some(index) = resolved else {
+                let _ = reply.send(Err(crate::control_bridge::BridgeError::not_found(
+                    "workspace not found",
+                )));
+                return;
+            };
+
+            let target = {
+                let app_state = state.borrow();
+                let workspace = &app_state.workspaces[index];
+                pane::browser_handle_for_root(&workspace.root, surface_hint.as_deref()).map(
+                    |(surface_id, handle)| (workspace.id.clone(), surface_id, handle),
+                )
+            };
+
+            let Some((workspace_id, surface_id, handle)) = target else {
+                let _ = reply.send(Err(crate::control_bridge::BridgeError::not_found(
+                    "browser surface not found",
+                )));
+                return;
+            };
+
+            let ok = match action.as_str() {
+                "back" => handle.go_back(),
+                "forward" => handle.go_forward(),
+                "reload" => handle.reload(),
+                "focus_webview" => handle.focus_webview(),
+                "is_webview_focused" => true,
+                _ => {
+                    let _ = reply.send(Err(crate::control_bridge::BridgeError::invalid_params(
+                        format!("unsupported browser control action: {action}"),
+                    )));
+                    return;
+                }
+            };
+            if !ok {
+                let _ = reply.send(Err(crate::control_bridge::BridgeError::internal(format!(
+                    "browser.{action} failed"
+                ))));
+                return;
+            }
+
+            let focused = handle.is_webview_focused();
+            let mut payload = browser_control_payload(&workspace_id, &surface_id, &handle);
+            if let Some(map) = payload.as_object_mut() {
+                map.insert("ok".to_string(), serde_json::Value::Bool(true));
+                map.insert("action".to_string(), serde_json::Value::String(action));
+                map.insert("focused".to_string(), serde_json::Value::Bool(focused));
+                map.insert(
+                    "is_webview_focused".to_string(),
+                    serde_json::Value::Bool(focused),
+                );
+            }
+            let _ = reply.send(Ok(payload));
+        }
         ControlCommand::BrowserUrlGet {
             target,
             surface_hint,

@@ -35,6 +35,11 @@ const METHODS: &[&str] = &[
     "surface.send_key",
     "browser.open_split",
     "browser.navigate",
+    "browser.back",
+    "browser.forward",
+    "browser.reload",
+    "browser.focus_webview",
+    "browser.is_webview_focused",
     "browser.url.get",
     "browser.get.title",
     "browser.get.text",
@@ -181,6 +186,12 @@ pub enum ControlCommand {
         target: WorkspaceTarget,
         surface_hint: Option<String>,
         url: String,
+        reply: mpsc::Sender<BridgeResult>,
+    },
+    BrowserControlAction {
+        target: WorkspaceTarget,
+        surface_hint: Option<String>,
+        action: String,
         reply: mpsc::Sender<BridgeResult>,
     },
     BrowserUrlGet {
@@ -336,6 +347,7 @@ impl ControlCommand {
             | Self::CreatePane { reply, .. }
             | Self::BrowserOpenSplit { reply, .. }
             | Self::BrowserNavigate { reply, .. }
+            | Self::BrowserControlAction { reply, .. }
             | Self::BrowserUrlGet { reply, .. }
             | Self::BrowserTitleGet { reply, .. }
             | Self::BrowserGet { reply, .. }
@@ -713,6 +725,31 @@ fn handle_method(
                     target,
                     surface_hint,
                     url,
+                    reply,
+                },
+                rx,
+            )
+        }
+        "browser.back"
+        | "browser.forward"
+        | "browser.reload"
+        | "browser.focus_webview"
+        | "browser.is_webview_focused" => {
+            let target = match parse_optional_workspace_target(params, true) {
+                Ok(target) => target,
+                Err(error) => return error_response(id, error),
+            };
+            let surface_hint =
+                match optional_ref_handle(params, &["surface_id", "id"], "surface:") {
+                    Ok(surface_hint) => surface_hint,
+                    Err(error) => return error_response(id, error),
+                };
+            let (reply, rx) = mpsc::channel();
+            (
+                ControlCommand::BrowserControlAction {
+                    target,
+                    surface_hint,
+                    action: method.trim_start_matches("browser.").to_string(),
                     reply,
                 },
                 rx,
@@ -1652,6 +1689,51 @@ mod tests {
             },
         );
         assert_eq!(navigate_response.error, None);
+    }
+
+    #[test]
+    fn browser_control_routes_accept_surface_refs() {
+        let back_response = dispatch_request(
+            r#"{"id":1,"method":"browser.back","params":{"surface_id":"surface:9:tab"}}"#,
+            &|command| match command {
+                ControlCommand::BrowserControlAction {
+                    target,
+                    surface_hint,
+                    action,
+                    reply,
+                } => {
+                    assert_eq!(target, WorkspaceTarget::Active);
+                    assert_eq!(surface_hint, Some("9:tab".to_string()));
+                    assert_eq!(action, "back");
+                    let _ = reply.send(Ok(json!({ "url": "https://example.com" })));
+                }
+                other => panic!("unexpected command: {other:?}"),
+            },
+        );
+        assert_eq!(back_response.error, None);
+        assert_eq!(back_response.result.expect("result")["url"], "https://example.com");
+
+        let focused_response = dispatch_request(
+            r#"{"id":2,"method":"browser.is_webview_focused","params":{"surface_id":"surface:9:tab"}}"#,
+            &|command| match command {
+                ControlCommand::BrowserControlAction {
+                    action,
+                    surface_hint,
+                    reply,
+                    ..
+                } => {
+                    assert_eq!(action, "is_webview_focused");
+                    assert_eq!(surface_hint, Some("9:tab".to_string()));
+                    let _ = reply.send(Ok(json!({ "is_webview_focused": true })));
+                }
+                other => panic!("unexpected command: {other:?}"),
+            },
+        );
+        assert_eq!(focused_response.error, None);
+        assert_eq!(
+            focused_response.result.expect("result")["is_webview_focused"],
+            true
+        );
     }
 
     #[test]

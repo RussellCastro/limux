@@ -3882,6 +3882,26 @@ impl BrowserControlHandle {
         self.handles.navigate(url)
     }
 
+    pub(crate) fn focus_webview(&self) -> bool {
+        self.handles.focus_webview()
+    }
+
+    pub(crate) fn is_webview_focused(&self) -> bool {
+        self.handles.is_webview_focused()
+    }
+
+    pub(crate) fn go_back(&self) -> bool {
+        self.handles.go_back()
+    }
+
+    pub(crate) fn go_forward(&self) -> bool {
+        self.handles.go_forward()
+    }
+
+    pub(crate) fn reload(&self) -> bool {
+        self.handles.reload()
+    }
+
     pub(crate) fn evaluate_javascript(
         &self,
         script: String,
@@ -3984,6 +4004,15 @@ impl BrowserHandles {
             self.webview.grab_focus();
         }
         true
+    }
+
+    fn focus_webview(&self) -> bool {
+        self.webview.grab_focus();
+        true
+    }
+
+    fn is_webview_focused(&self) -> bool {
+        self.webview.is_focus()
     }
 
     fn is_page_editable(&self) -> bool {
@@ -4319,6 +4348,14 @@ impl BrowserHandles {
     }
 
     fn focus_content(&self) -> bool {
+        false
+    }
+
+    fn focus_webview(&self) -> bool {
+        false
+    }
+
+    fn is_webview_focused(&self) -> bool {
         false
     }
 
