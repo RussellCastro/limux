@@ -183,11 +183,10 @@ const BROWSER_SNAPSHOT_SCRIPT: &str = r#"
 "#;
 
 #[cfg(feature = "webkit")]
-fn parse_browser_json_result(
+fn parse_browser_json_value(
     action: &str,
     result: Result<serde_json::Value, String>,
-    on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
-) {
+) -> Result<serde_json::Value, String> {
     match result {
         Ok(serde_json::Value::String(payload)) => {
             match serde_json::from_str::<serde_json::Value>(&payload) {
@@ -198,21 +197,134 @@ fn parse_browser_json_result(
                             .and_then(serde_json::Value::as_str)
                             .unwrap_or("browser action failed")
                             .to_string();
-                        on_result(Err(error));
+                        Err(error)
                     } else {
-                        on_result(Ok(value));
+                        Ok(value)
                     }
                 }
-                Err(error) => on_result(Err(format!(
-                    "{action} returned invalid JSON: {error}"
-                ))),
+                Err(error) => Err(format!("{action} returned invalid JSON: {error}")),
             }
         }
-        Ok(value) => on_result(Err(format!(
-            "{action} returned unexpected value: {value}"
-        ))),
-        Err(error) => on_result(Err(error)),
+        Ok(value) => Err(format!("{action} returned unexpected value: {value}")),
+        Err(error) => Err(error),
     }
+}
+
+#[cfg(feature = "webkit")]
+fn parse_browser_json_result(
+    action: &str,
+    result: Result<serde_json::Value, String>,
+    on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
+) {
+    on_result(parse_browser_json_value(action, result));
+}
+
+#[cfg(feature = "webkit")]
+fn browser_ref_key(raw: &str) -> Option<String> {
+    let value = raw.trim().trim_start_matches('@');
+    let rest = value.strip_prefix('e')?;
+    (!rest.is_empty() && rest.chars().all(|ch| ch.is_ascii_digit()))
+        .then(|| value.to_string())
+}
+
+#[cfg(feature = "webkit")]
+fn store_browser_refs(
+    refs: &Rc<RefCell<std::collections::HashMap<String, String>>>,
+    next_ref: &Rc<Cell<u32>>,
+    value: &serde_json::Value,
+) {
+    let Some(snapshot_refs) = value.get("refs").and_then(serde_json::Value::as_object) else {
+        return;
+    };
+    let mut stored = refs.borrow_mut();
+    let mut max_seen = next_ref.get();
+    for (key, entry) in snapshot_refs {
+        let Some(selector) = entry.get("selector").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        if selector.trim().is_empty() {
+            continue;
+        }
+        let key = key.trim().trim_start_matches('@').to_string();
+        if let Some(index) = key
+            .strip_prefix('e')
+            .and_then(|raw| raw.parse::<u32>().ok())
+        {
+            max_seen = max_seen.max(index.saturating_add(1));
+        }
+        stored.insert(key, selector.to_string());
+    }
+    next_ref.set(max_seen.max(2));
+}
+
+#[cfg(feature = "webkit")]
+fn resolve_browser_selector(
+    refs: &Rc<RefCell<std::collections::HashMap<String, String>>>,
+    selector: &str,
+) -> Result<String, String> {
+    let Some(key) = browser_ref_key(selector) else {
+        return Ok(selector.to_string());
+    };
+    refs.borrow().get(&key).cloned().ok_or_else(|| {
+        format!("browser element ref not found: {selector}; run browser.snapshot or browser.find first")
+    })
+}
+
+#[cfg(feature = "webkit")]
+fn remember_find_result(
+    refs: &Rc<RefCell<std::collections::HashMap<String, String>>>,
+    next_ref: &Rc<Cell<u32>>,
+    mut value: serde_json::Value,
+) -> serde_json::Value {
+    let selector = value
+        .get("selector")
+        .and_then(serde_json::Value::as_str)
+        .filter(|selector| !selector.trim().is_empty())
+        .map(ToOwned::to_owned);
+    let Some(selector) = selector else {
+        return value;
+    };
+
+    let mut stored = refs.borrow_mut();
+    let existing = stored
+        .iter()
+        .find_map(|(key, stored_selector)| (stored_selector == &selector).then(|| key.clone()));
+    let key = existing.unwrap_or_else(|| {
+        let index = next_ref.get().max(2);
+        next_ref.set(index.saturating_add(1));
+        let key = format!("e{index}");
+        stored.insert(key.clone(), selector.clone());
+        key
+    });
+    drop(stored);
+
+    let role = value
+        .get("role")
+        .cloned()
+        .unwrap_or_else(|| serde_json::Value::String("element".to_string()));
+    let name = value
+        .get("name")
+        .cloned()
+        .unwrap_or_else(|| serde_json::Value::String(String::new()));
+    let mut refs_payload = serde_json::Map::new();
+    refs_payload.insert(
+        key.clone(),
+        serde_json::json!({
+            "role": role,
+            "name": name,
+            "selector": selector,
+        }),
+    );
+
+    if let Some(map) = value.as_object_mut() {
+        map.insert(
+            "element_ref".to_string(),
+            serde_json::Value::String(format!("@{key}")),
+        );
+        map.insert("ref".to_string(), serde_json::Value::String(key));
+        map.insert("refs".to_string(), serde_json::Value::Object(refs_payload));
+    }
+    value
 }
 
 #[cfg(feature = "webkit")]
@@ -266,6 +378,118 @@ fn browser_fill_script(selector: &str, text: &str) -> String {
   el.dispatchEvent(new Event('input', {{ bubbles: true }}));
   el.dispatchEvent(new Event('change', {{ bubbles: true }}));
   return JSON.stringify({{ ok: true, selector, value }});
+}})()
+"#
+    )
+}
+
+#[cfg(feature = "webkit")]
+fn browser_find_script(locator: &str, value: &str, index: Option<usize>) -> String {
+    let locator = serde_json::to_string(locator).unwrap_or_else(|_| "\"\"".to_string());
+    let value = serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_string());
+    let index = index.unwrap_or(0);
+    format!(
+        r#"
+(() => {{
+  const locator = {locator};
+  const needle = {value};
+  const index = {index};
+  const clip = (value, limit = 180) => String(value == null ? '' : value).replace(/\s+/g, ' ').trim().slice(0, limit);
+  const norm = (value) => clip(value, 10000).toLowerCase();
+  const cssEscape = (value) => {{
+    if (window.CSS && CSS.escape) return CSS.escape(value);
+    return String(value).replace(/[^a-zA-Z0-9_-]/g, '\\$&');
+  }};
+  const attrSelector = (name, value) => `[${{name}}="${{String(value).replace(/"/g, '\\"')}}"]`;
+  const selectorFor = (el) => {{
+    if (!el || !el.localName) return '';
+    if (el.id) return `#${{cssEscape(el.id)}}`;
+    for (const attr of ['data-testid', 'data-test', 'name', 'aria-label']) {{
+      const attrValue = el.getAttribute(attr);
+      if (attrValue) return `${{el.localName.toLowerCase()}}${{attrSelector(attr, attrValue)}}`;
+    }}
+    const parts = [];
+    let node = el;
+    while (node && node.nodeType === Node.ELEMENT_NODE && node !== document.body && parts.length < 4) {{
+      let part = node.localName.toLowerCase();
+      const parent = node.parentElement;
+      if (parent) {{
+        const siblings = Array.from(parent.children).filter((child) => child.localName === node.localName);
+        if (siblings.length > 1) part += `:nth-of-type(${{siblings.indexOf(node) + 1}})`;
+      }}
+      parts.unshift(part);
+      node = parent;
+    }}
+    return parts.length ? parts.join(' > ') : el.localName.toLowerCase();
+  }};
+  const roleFor = (el) => {{
+    const explicit = el.getAttribute('role');
+    if (explicit) return explicit;
+    const tag = el.localName.toLowerCase();
+    const type = (el.getAttribute('type') || '').toLowerCase();
+    if (tag === 'a' && el.hasAttribute('href')) return 'link';
+    if (tag === 'button' || type === 'button' || type === 'submit') return 'button';
+    if (tag === 'textarea' || ['email', 'password', 'search', 'tel', 'text', 'url'].includes(type)) return 'textbox';
+    if (type === 'checkbox') return 'checkbox';
+    if (type === 'radio') return 'radio';
+    if (tag === 'select') return 'combobox';
+    if (/^h[1-6]$/.test(tag)) return 'heading';
+    if (tag === 'li') return 'listitem';
+    if (tag === 'label') return 'label';
+    return tag === 'p' ? 'paragraph' : tag;
+  }};
+  const nameFor = (el) => {{
+    for (const attr of ['aria-label', 'alt', 'title', 'placeholder', 'value']) {{
+      const attrValue = el.getAttribute(attr);
+      if (attrValue) return clip(attrValue);
+    }}
+    if (el.labels && el.labels.length) {{
+      const labels = Array.from(el.labels).map((label) => clip(label.innerText || label.textContent)).filter(Boolean).join(' ');
+      if (labels) return clip(labels);
+    }}
+    return clip(el.innerText || el.textContent);
+  }};
+  const isVisible = (el) => {{
+    if (!el || !(el instanceof Element)) return false;
+    const style = window.getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden') return false;
+    if (el.tagName === 'BODY' || el.tagName === 'HTML') return true;
+    return el.getClientRects().length > 0;
+  }};
+  const all = () => Array.from(document.querySelectorAll('a[href],button,input,textarea,select,summary,[role],[aria-label],[alt],[title],[placeholder],[data-testid],[data-test],label,h1,h2,h3,h4,h5,h6,p,li')).filter(isVisible);
+  let matches = [];
+  try {{
+    if (locator === 'first' || locator === 'last' || locator === 'nth') {{
+      matches = Array.from(document.querySelectorAll(needle)).filter(isVisible);
+    }} else if (locator === 'role') {{
+      matches = all().filter((el) => roleFor(el).toLowerCase() === norm(needle));
+    }} else if (locator === 'label') {{
+      matches = all().filter((el) => norm(nameFor(el)).includes(norm(needle)));
+    }} else if (locator === 'placeholder') {{
+      matches = all().filter((el) => norm(el.getAttribute('placeholder')).includes(norm(needle)));
+    }} else if (locator === 'title') {{
+      matches = all().filter((el) => norm(el.getAttribute('title')).includes(norm(needle)));
+    }} else if (locator === 'alt') {{
+      matches = all().filter((el) => norm(el.getAttribute('alt')).includes(norm(needle)));
+    }} else if (locator === 'testid') {{
+      matches = all().filter((el) => norm(el.getAttribute('data-testid') || el.getAttribute('data-test')).includes(norm(needle)));
+    }} else {{
+      matches = all().filter((el) => norm(el.innerText || el.textContent || nameFor(el)).includes(norm(needle)));
+    }}
+  }} catch (error) {{
+    return JSON.stringify({{ ok: false, error: `invalid selector: ${{error.message || error}}` }});
+  }}
+  const picked = locator === 'last' ? matches[matches.length - 1] : matches[index];
+  if (!picked) {{
+    return JSON.stringify({{ ok: false, error: 'element not found; snapshot: run browser.snapshot; hint: verify locator' }});
+  }}
+  return JSON.stringify({{
+    ok: true,
+    selector: selectorFor(picked),
+    role: roleFor(picked),
+    name: nameFor(picked),
+    index,
+  }});
 }})()
 "#
     )
@@ -3093,6 +3317,8 @@ struct BrowserHandles {
     search_entry: gtk::SearchEntry,
     find_controller: webkit6::FindController,
     dom_editable: Rc<Cell<bool>>,
+    automation_refs: Rc<RefCell<std::collections::HashMap<String, String>>>,
+    automation_ref_next: Rc<Cell<u32>>,
 }
 
 #[cfg(not(feature = "webkit"))]
@@ -3216,6 +3442,16 @@ impl BrowserControlHandle {
     ) {
         self.handles.fill(selector, text, on_result)
     }
+
+    pub(crate) fn find(
+        &self,
+        locator: String,
+        value: String,
+        index: Option<usize>,
+        on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
+    ) {
+        self.handles.find(locator, value, index, on_result)
+    }
 }
 
 #[cfg(feature = "webkit")]
@@ -3283,8 +3519,14 @@ impl BrowserHandles {
     }
 
     fn snapshot(&self, on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static) {
+        let refs = self.automation_refs.clone();
+        let next_ref = self.automation_ref_next.clone();
         self.evaluate_javascript(BROWSER_SNAPSHOT_SCRIPT.to_string(), move |result| {
-            parse_browser_json_result("browser.snapshot", result, on_result)
+            let result = parse_browser_json_value("browser.snapshot", result).map(|value| {
+                store_browser_refs(&refs, &next_ref, &value);
+                value
+            });
+            on_result(result);
         });
     }
 
@@ -3293,6 +3535,13 @@ impl BrowserHandles {
         selector: String,
         on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
     ) {
+        let selector = match resolve_browser_selector(&self.automation_refs, &selector) {
+            Ok(selector) => selector,
+            Err(error) => {
+                on_result(Err(error));
+                return;
+            }
+        };
         self.evaluate_javascript(browser_click_script(&selector), move |result| {
             parse_browser_json_result("browser.click", result, on_result)
         });
@@ -3304,8 +3553,31 @@ impl BrowserHandles {
         text: String,
         on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
     ) {
+        let selector = match resolve_browser_selector(&self.automation_refs, &selector) {
+            Ok(selector) => selector,
+            Err(error) => {
+                on_result(Err(error));
+                return;
+            }
+        };
         self.evaluate_javascript(browser_fill_script(&selector, &text), move |result| {
             parse_browser_json_result("browser.fill", result, on_result)
+        });
+    }
+
+    fn find(
+        &self,
+        locator: String,
+        value: String,
+        index: Option<usize>,
+        on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
+    ) {
+        let refs = self.automation_refs.clone();
+        let next_ref = self.automation_ref_next.clone();
+        self.evaluate_javascript(browser_find_script(&locator, &value, index), move |result| {
+            let result = parse_browser_json_value("browser.find", result)
+                .map(|value| remember_find_result(&refs, &next_ref, value));
+            on_result(result);
         });
     }
 
@@ -3480,6 +3752,16 @@ impl BrowserHandles {
         on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
     ) {
         on_result(Err("browser.fill requires WebKit support".to_string()));
+    }
+
+    fn find(
+        &self,
+        _locator: String,
+        _value: String,
+        _index: Option<usize>,
+        on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
+    ) {
+        on_result(Err("browser.find requires WebKit support".to_string()));
     }
 
     fn focus_location(&self) -> bool {
@@ -3783,10 +4065,16 @@ fn create_browser_widget(
             webview.grab_focus();
         });
     }
+    let automation_refs = Rc::new(RefCell::new(std::collections::HashMap::new()));
+    let automation_ref_next = Rc::new(Cell::new(2));
     {
         let dom_editable = dom_editable.clone();
+        let automation_refs = automation_refs.clone();
+        let automation_ref_next = automation_ref_next.clone();
         webview.connect_load_changed(move |_, _| {
             dom_editable.set(false);
+            automation_refs.borrow_mut().clear();
+            automation_ref_next.set(2);
         });
     }
 
@@ -3808,6 +4096,8 @@ fn create_browser_widget(
         search_entry: search_entry.clone(),
         find_controller: find_controller.clone(),
         dom_editable,
+        automation_refs,
+        automation_ref_next,
     };
 
     {

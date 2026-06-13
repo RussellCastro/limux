@@ -4447,6 +4447,61 @@ fn handle_control_command(state: &State, command: ControlCommand) {
                 }
             });
         }
+        ControlCommand::BrowserFind {
+            target,
+            surface_hint,
+            locator,
+            value,
+            index,
+            reply,
+        } => {
+            let resolved = {
+                let app_state = state.borrow();
+                workspace_index_for_target(&app_state, &target)
+            };
+
+            let Some(index_workspace) = resolved else {
+                let _ = reply.send(Err(crate::control_bridge::BridgeError::not_found(
+                    "workspace not found",
+                )));
+                return;
+            };
+
+            let target = {
+                let app_state = state.borrow();
+                let workspace = &app_state.workspaces[index_workspace];
+                pane::browser_handle_for_root(&workspace.root, surface_hint.as_deref()).map(
+                    |(surface_id, handle)| (workspace.id.clone(), surface_id, handle),
+                )
+            };
+
+            let Some((workspace_id, surface_id, handle)) = target else {
+                let _ = reply.send(Err(crate::control_bridge::BridgeError::not_found(
+                    "browser surface not found",
+                )));
+                return;
+            };
+
+            let payload = browser_control_payload(&workspace_id, &surface_id, &handle);
+            handle.find(locator, value, index, move |result| match result {
+                Ok(found) => {
+                    let mut payload = payload;
+                    if let (Some(payload_map), Some(found_map)) =
+                        (payload.as_object_mut(), found.as_object())
+                    {
+                        for (key, value) in found_map {
+                            payload_map.insert(key.clone(), value.clone());
+                        }
+                    }
+                    let _ = reply.send(Ok(payload));
+                }
+                Err(error) => {
+                    let _ = reply.send(Err(crate::control_bridge::BridgeError::internal(
+                        format!("browser.find failed: {error}"),
+                    )));
+                }
+            });
+        }
         ControlCommand::BrowserClick {
             target,
             surface_hint,

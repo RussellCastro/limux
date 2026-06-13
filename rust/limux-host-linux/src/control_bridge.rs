@@ -39,6 +39,16 @@ const METHODS: &[&str] = &[
     "browser.get.title",
     "browser.eval",
     "browser.snapshot",
+    "browser.find.text",
+    "browser.find.label",
+    "browser.find.placeholder",
+    "browser.find.title",
+    "browser.find.testid",
+    "browser.find.alt",
+    "browser.find.role",
+    "browser.find.first",
+    "browser.find.last",
+    "browser.find.nth",
     "browser.click",
     "browser.fill",
     "notification.create",
@@ -164,6 +174,14 @@ pub enum ControlCommand {
         surface_hint: Option<String>,
         reply: mpsc::Sender<BridgeResult>,
     },
+    BrowserFind {
+        target: WorkspaceTarget,
+        surface_hint: Option<String>,
+        locator: String,
+        value: String,
+        index: Option<usize>,
+        reply: mpsc::Sender<BridgeResult>,
+    },
     BrowserClick {
         target: WorkspaceTarget,
         surface_hint: Option<String>,
@@ -249,6 +267,7 @@ impl ControlCommand {
             | Self::BrowserTitleGet { reply, .. }
             | Self::BrowserEval { reply, .. }
             | Self::BrowserSnapshot { reply, .. }
+            | Self::BrowserFind { reply, .. }
             | Self::BrowserClick { reply, .. }
             | Self::BrowserFill { reply, .. }
             | Self::ListSurfaces { reply, .. }
@@ -693,6 +712,50 @@ fn handle_method(
                 ControlCommand::BrowserSnapshot {
                     target,
                     surface_hint,
+                    reply,
+                },
+                rx,
+            )
+        }
+        method if method.starts_with("browser.find.") => {
+            let locator = method
+                .trim_start_matches("browser.find.")
+                .trim()
+                .to_string();
+            let value = match locator.as_str() {
+                "role" => optional_string(params, &["role", "name"]),
+                "first" | "last" | "nth" => optional_string(params, &["selector"]),
+                other => optional_string(params, &[other]),
+            };
+            let Some(value) = value else {
+                return error_response(
+                    id,
+                    BridgeError::invalid_params(format!(
+                        "browser.find.{locator} requires a locator value"
+                    )),
+                );
+            };
+            let target = match parse_optional_workspace_target(params, true) {
+                Ok(target) => target,
+                Err(error) => return error_response(id, error),
+            };
+            let surface_hint =
+                match optional_ref_handle(params, &["surface_id", "id"], "surface:") {
+                    Ok(surface_hint) => surface_hint,
+                    Err(error) => return error_response(id, error),
+                };
+            let index = match optional_index(params, "index") {
+                Ok(index) => index,
+                Err(error) => return error_response(id, error),
+            };
+            let (reply, rx) = mpsc::channel();
+            (
+                ControlCommand::BrowserFind {
+                    target,
+                    surface_hint,
+                    locator,
+                    value,
+                    index,
                     reply,
                 },
                 rx,
@@ -1340,6 +1403,44 @@ mod tests {
 
         assert_eq!(response.error, None);
         assert_eq!(response.result.expect("result")["text"], "Limux");
+    }
+
+    #[test]
+    fn browser_find_routes_require_locator_values_and_accept_surface_refs() {
+        let missing_value = dispatch_request(
+            r#"{"id":1,"method":"browser.find.text","params":{"surface_id":"surface:9:tab"}}"#,
+            &|command| panic!("invalid browser.find should not dispatch: {command:?}"),
+        );
+        assert_eq!(missing_value.result, None);
+        assert_eq!(
+            missing_value.error.as_ref().map(|error| error.code),
+            Some(INVALID_PARAMS_CODE)
+        );
+
+        let response = dispatch_request(
+            r#"{"id":2,"method":"browser.find.nth","params":{"surface_id":"surface:9:tab","selector":"button","index":2}}"#,
+            &|command| match command {
+                ControlCommand::BrowserFind {
+                    target,
+                    surface_hint,
+                    locator,
+                    value,
+                    index,
+                    reply,
+                } => {
+                    assert_eq!(target, WorkspaceTarget::Active);
+                    assert_eq!(surface_hint, Some("9:tab".to_string()));
+                    assert_eq!(locator, "nth");
+                    assert_eq!(value, "button");
+                    assert_eq!(index, Some(2));
+                    let _ = reply.send(Ok(json!({ "element_ref": "@e2", "selector": "button:nth-of-type(3)" })));
+                }
+                other => panic!("unexpected command: {other:?}"),
+            },
+        );
+
+        assert_eq!(response.error, None);
+        assert_eq!(response.result.expect("result")["element_ref"], "@e2");
     }
 
     #[test]
