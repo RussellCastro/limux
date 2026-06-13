@@ -77,11 +77,11 @@ not only the standalone dispatcher. The live bridge supports workspace, pane,
 surface, terminal send/key/read/health, notification, and terminal pane-create
 commands. The live browser bridge has a small first slice for open-split,
 navigate, back/forward/reload, webview focus/focus-state, URL/title/get
-lookup, JSON-typed JS eval, DOM/ARIA snapshot/find, selector or `@eN` ref
+lookup, JSON-typed JS eval, same-origin frame selection, DOM/ARIA snapshot/find, selector or `@eN` ref
 click/fill/type/select/check/focus/hover/dblclick,
 scroll/scroll-into-view, key actions, page-level cookies/storage commands,
 browser tab list/new/switch/close, and polling wait checks with timeout support;
-screenshots, full accessibility-tree parity, and frame-stable refs remain
+screenshots, full accessibility-tree parity, and full frame-stable refs remain
 separate work. Check
 `docs/cmux-parity-plan.md` before changing agent or browser automation.
 For cmux-compatibility work, also update `docs/cmux-parity-contract.md`;

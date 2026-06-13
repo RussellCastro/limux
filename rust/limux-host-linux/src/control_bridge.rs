@@ -40,6 +40,8 @@ const METHODS: &[&str] = &[
     "browser.reload",
     "browser.focus_webview",
     "browser.is_webview_focused",
+    "browser.frame.main",
+    "browser.frame.select",
     "browser.url.get",
     "browser.get.title",
     "browser.get.text",
@@ -233,6 +235,13 @@ pub enum ControlCommand {
         script: String,
         reply: mpsc::Sender<BridgeResult>,
     },
+    BrowserFrame {
+        target: WorkspaceTarget,
+        surface_hint: Option<String>,
+        action: String,
+        selector: Option<String>,
+        reply: mpsc::Sender<BridgeResult>,
+    },
     BrowserSnapshot {
         target: WorkspaceTarget,
         surface_hint: Option<String>,
@@ -375,6 +384,7 @@ impl ControlCommand {
             | Self::BrowserGet { reply, .. }
             | Self::BrowserWait { reply, .. }
             | Self::BrowserEval { reply, .. }
+            | Self::BrowserFrame { reply, .. }
             | Self::BrowserSnapshot { reply, .. }
             | Self::BrowserFind { reply, .. }
             | Self::BrowserClick { reply, .. }
@@ -927,6 +937,36 @@ fn handle_method(
                     target,
                     surface_hint,
                     script,
+                    reply,
+                },
+                rx,
+            )
+        }
+        "browser.frame.main" | "browser.frame.select" => {
+            let action = method.trim_start_matches("browser.frame.").to_string();
+            let target = match parse_optional_workspace_target(params, true) {
+                Ok(target) => target,
+                Err(error) => return error_response(id, error),
+            };
+            let surface_hint =
+                match optional_ref_handle(params, &["surface_id", "id"], "surface:") {
+                    Ok(surface_hint) => surface_hint,
+                    Err(error) => return error_response(id, error),
+                };
+            let selector = optional_string(params, &["selector", "frame_id"]);
+            if action == "select" && selector.is_none() {
+                return error_response(
+                    id,
+                    BridgeError::invalid_params("browser.frame.select requires selector"),
+                );
+            }
+            let (reply, rx) = mpsc::channel();
+            (
+                ControlCommand::BrowserFrame {
+                    target,
+                    surface_hint,
+                    action,
+                    selector,
                     reply,
                 },
                 rx,
@@ -1920,6 +1960,59 @@ mod tests {
 
         assert_eq!(response.error, None);
         assert_eq!(response.result.expect("result")["value"], "Limux");
+    }
+
+    #[test]
+    fn browser_frame_routes_require_selector_and_accept_surface_refs() {
+        let missing_selector = dispatch_request(
+            r#"{"id":1,"method":"browser.frame.select","params":{"surface_id":"surface:9:tab"}}"#,
+            &|command| panic!("invalid browser.frame.select should not dispatch: {command:?}"),
+        );
+        assert_eq!(missing_selector.result, None);
+        assert_eq!(
+            missing_selector.error.as_ref().map(|error| error.code),
+            Some(INVALID_PARAMS_CODE)
+        );
+
+        let select_response = dispatch_request(
+            r#"{"id":2,"method":"browser.frame.select","params":{"surface_id":"surface:9:tab","selector":"iframe#app"}}"#,
+            &|command| match command {
+                ControlCommand::BrowserFrame {
+                    target,
+                    surface_hint,
+                    action,
+                    selector,
+                    reply,
+                } => {
+                    assert_eq!(target, WorkspaceTarget::Active);
+                    assert_eq!(surface_hint, Some("9:tab".to_string()));
+                    assert_eq!(action, "select");
+                    assert_eq!(selector, Some("iframe#app".to_string()));
+                    let _ = reply.send(Ok(json!({ "ok": true, "frame_id": "iframe#app" })));
+                }
+                other => panic!("unexpected command: {other:?}"),
+            },
+        );
+        assert_eq!(select_response.error, None);
+        assert_eq!(select_response.result.expect("result")["frame_id"], "iframe#app");
+
+        let main_response = dispatch_request(
+            r#"{"id":3,"method":"browser.frame.main","params":{"surface_id":"surface:9:tab"}}"#,
+            &|command| match command {
+                ControlCommand::BrowserFrame {
+                    action,
+                    selector,
+                    reply,
+                    ..
+                } => {
+                    assert_eq!(action, "main");
+                    assert_eq!(selector, None);
+                    let _ = reply.send(Ok(json!({ "ok": true, "frame_id": "main" })));
+                }
+                other => panic!("unexpected command: {other:?}"),
+            },
+        );
+        assert_eq!(main_response.error, None);
     }
 
     #[test]

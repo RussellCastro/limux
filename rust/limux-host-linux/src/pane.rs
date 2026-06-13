@@ -267,6 +267,82 @@ fn finish_browser_result(
 }
 
 #[cfg(feature = "webkit")]
+fn browser_scoped_script(frame_selector: Option<&str>, script: String) -> String {
+    let frame_selector = match frame_selector {
+        Some(selector) => serde_json::to_string(selector).unwrap_or_else(|_| "null".to_string()),
+        None => "null".to_string(),
+    };
+    format!(
+        r#"
+(() => {{
+  const __limuxFrameSelector = {frame_selector};
+  if (__limuxFrameSelector == null) return ({script});
+  const __limuxTopWindow = globalThis.window;
+  const __limuxTopDocument = __limuxTopWindow.document;
+  const __limuxFrame = __limuxTopDocument.querySelector(__limuxFrameSelector);
+  if (!__limuxFrame) {{
+    return JSON.stringify({{ ok: false, error: 'frame not found', frame_id: __limuxFrameSelector }});
+  }}
+  let __limuxFrameWindow = null;
+  let __limuxFrameDocument = null;
+  try {{
+    __limuxFrameWindow = __limuxFrame.contentWindow;
+    __limuxFrameDocument = __limuxFrame.contentDocument || (__limuxFrameWindow && __limuxFrameWindow.document);
+  }} catch (error) {{
+    return JSON.stringify({{ ok: false, error: `frame not accessible: ${{error && error.message ? error.message : error}}`, frame_id: __limuxFrameSelector }});
+  }}
+  if (!__limuxFrameWindow || !__limuxFrameDocument) {{
+    return JSON.stringify({{ ok: false, error: 'frame not accessible', frame_id: __limuxFrameSelector }});
+  }}
+  {{
+    const window = __limuxFrameWindow;
+    const document = __limuxFrameDocument;
+    const Element = window.Element;
+    const Event = window.Event;
+    const MouseEvent = window.MouseEvent;
+    const KeyboardEvent = window.KeyboardEvent;
+    return ({script});
+  }}
+}})()
+"#
+    )
+}
+
+#[cfg(feature = "webkit")]
+fn browser_frame_select_script(selector: &str) -> String {
+    let selector = serde_json::to_string(selector).unwrap_or_else(|_| "\"\"".to_string());
+    format!(
+        r#"
+(() => {{
+  const selector = {selector};
+  const frame = document.querySelector(selector);
+  if (!frame) {{
+    return JSON.stringify({{ ok: false, error: 'frame not found', frame_id: selector }});
+  }}
+  let frameWindow = null;
+  let frameDocument = null;
+  try {{
+    frameWindow = frame.contentWindow;
+    frameDocument = frame.contentDocument || (frameWindow && frameWindow.document);
+  }} catch (error) {{
+    return JSON.stringify({{ ok: false, error: `frame not accessible: ${{error && error.message ? error.message : error}}`, frame_id: selector }});
+  }}
+  if (!frameWindow || !frameDocument) {{
+    return JSON.stringify({{ ok: false, error: 'frame not accessible', frame_id: selector }});
+  }}
+  return JSON.stringify({{
+    ok: true,
+    frame_id: selector,
+    selector,
+    title: frameDocument.title || '',
+    url: frameWindow.location ? String(frameWindow.location.href || '') : '',
+  }});
+}})()
+"#
+    )
+}
+
+#[cfg(feature = "webkit")]
 fn browser_eval_script(script: &str) -> String {
     let script = serde_json::to_string(script).unwrap_or_else(|_| "\"\"".to_string());
     format!(
@@ -3968,6 +4044,7 @@ struct BrowserHandles {
     dom_editable: Rc<Cell<bool>>,
     automation_refs: Rc<RefCell<std::collections::HashMap<String, String>>>,
     automation_ref_next: Rc<Cell<u32>>,
+    selected_frame_selector: Rc<RefCell<Option<String>>>,
 }
 
 #[cfg(not(feature = "webkit"))]
@@ -4086,6 +4163,18 @@ impl BrowserControlHandle {
         on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
     ) {
         self.handles.evaluate_javascript(script, on_result)
+    }
+
+    pub(crate) fn frame_main(&self) -> serde_json::Value {
+        self.handles.frame_main()
+    }
+
+    pub(crate) fn frame_select(
+        &self,
+        selector: String,
+        on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
+    ) {
+        self.handles.frame_select(selector, on_result)
     }
 
     pub(crate) fn evaluate_user_script(
@@ -4262,12 +4351,54 @@ impl BrowserHandles {
         );
     }
 
+    fn reset_automation_refs(&self) {
+        self.automation_refs.borrow_mut().clear();
+        self.automation_ref_next.set(2);
+    }
+
+    fn current_frame_selector(&self) -> Option<String> {
+        self.selected_frame_selector.borrow().clone()
+    }
+
+    fn scoped_script(&self, script: String) -> String {
+        let frame_selector = self.current_frame_selector();
+        browser_scoped_script(frame_selector.as_deref(), script)
+    }
+
+    fn frame_main(&self) -> serde_json::Value {
+        *self.selected_frame_selector.borrow_mut() = None;
+        self.reset_automation_refs();
+        serde_json::json!({ "ok": true, "frame_id": "main", "selector": serde_json::Value::Null })
+    }
+
+    fn frame_select(
+        &self,
+        selector: String,
+        on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
+    ) {
+        let selected_frame_selector = self.selected_frame_selector.clone();
+        let automation_refs = self.automation_refs.clone();
+        let automation_ref_next = self.automation_ref_next.clone();
+        self.evaluate_javascript(browser_frame_select_script(&selector), move |result| {
+            let result = parse_browser_json_value("browser.frame.select", result).map(|mut value| {
+                *selected_frame_selector.borrow_mut() = Some(selector.clone());
+                automation_refs.borrow_mut().clear();
+                automation_ref_next.set(2);
+                if let Some(map) = value.as_object_mut() {
+                    map.insert("ok".to_string(), serde_json::Value::Bool(true));
+                }
+                value
+            });
+            on_result(result);
+        });
+    }
+
     fn evaluate_user_script(
         &self,
         script: String,
         on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
     ) {
-        self.evaluate_javascript(browser_eval_script(&script), move |result| {
+        self.evaluate_javascript(self.scoped_script(browser_eval_script(&script)), move |result| {
             parse_browser_json_result("browser.eval", result, on_result)
         });
     }
@@ -4275,7 +4406,7 @@ impl BrowserHandles {
     fn snapshot(&self, on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static) {
         let refs = self.automation_refs.clone();
         let next_ref = self.automation_ref_next.clone();
-        self.evaluate_javascript(BROWSER_SNAPSHOT_SCRIPT.to_string(), move |result| {
+        self.evaluate_javascript(self.scoped_script(BROWSER_SNAPSHOT_SCRIPT.to_string()), move |result| {
             let result = parse_browser_json_value("browser.snapshot", result).map(|value| {
                 store_browser_refs(&refs, &next_ref, &value);
                 value
@@ -4296,7 +4427,7 @@ impl BrowserHandles {
                 return;
             }
         };
-        self.evaluate_javascript(browser_click_script(&selector), move |result| {
+        self.evaluate_javascript(self.scoped_script(browser_click_script(&selector)), move |result| {
             parse_browser_json_result("browser.click", result, on_result)
         });
     }
@@ -4314,7 +4445,7 @@ impl BrowserHandles {
                 return;
             }
         };
-        self.evaluate_javascript(browser_fill_script(&selector, &text), move |result| {
+        self.evaluate_javascript(self.scoped_script(browser_fill_script(&selector, &text)), move |result| {
             parse_browser_json_result("browser.fill", result, on_result)
         });
     }
@@ -4328,7 +4459,7 @@ impl BrowserHandles {
     ) {
         let refs = self.automation_refs.clone();
         let next_ref = self.automation_ref_next.clone();
-        self.evaluate_javascript(browser_find_script(&locator, &value, index), move |result| {
+        self.evaluate_javascript(self.scoped_script(browser_find_script(&locator, &value, index)), move |result| {
             let result = parse_browser_json_value("browser.find", result)
                 .map(|value| remember_find_result(&refs, &next_ref, value));
             on_result(result);
@@ -4353,7 +4484,7 @@ impl BrowserHandles {
             None => None,
         };
         self.evaluate_javascript(
-            browser_get_script(&kind, selector.as_deref(), name.as_deref()),
+            self.scoped_script(browser_get_script(&kind, selector.as_deref(), name.as_deref())),
             move |result| parse_browser_json_result("browser.get", result, on_result),
         );
     }
@@ -4399,7 +4530,7 @@ fn browser_wait_poll(
     deadline: std::time::Instant,
     on_result: BrowserResultCallback,
 ) {
-    handles.evaluate_javascript(browser_wait_script(&condition), move |result| {
+    handles.evaluate_javascript(handles.scoped_script(browser_wait_script(&condition)), move |result| {
         let now = std::time::Instant::now();
         match parse_browser_wait_value(result) {
             Ok(mut value) => {
@@ -4465,14 +4596,14 @@ fn browser_wait_poll(
             None => None,
         };
         self.evaluate_javascript(
-            browser_action_script(
+            self.scoped_script(browser_action_script(
                 &method,
                 selector.as_deref(),
                 text.as_deref(),
                 value.as_deref(),
                 key.as_deref(),
                 dy,
-            ),
+            )),
             move |result| parse_browser_json_result("browser.action", result, on_result),
         );
     }
@@ -4656,6 +4787,18 @@ impl BrowserHandles {
         on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
     ) {
         on_result(Err("browser.eval requires WebKit support".to_string()));
+    }
+
+    fn frame_main(&self) -> serde_json::Value {
+        serde_json::json!({ "ok": false, "error": "browser.frame.main requires WebKit support" })
+    }
+
+    fn frame_select(
+        &self,
+        _selector: String,
+        on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
+    ) {
+        on_result(Err("browser.frame.select requires WebKit support".to_string()));
     }
 
     fn evaluate_user_script(
@@ -5048,14 +5191,17 @@ fn create_browser_widget(
     }
     let automation_refs = Rc::new(RefCell::new(std::collections::HashMap::new()));
     let automation_ref_next = Rc::new(Cell::new(2));
+    let selected_frame_selector = Rc::new(RefCell::new(None));
     {
         let dom_editable = dom_editable.clone();
         let automation_refs = automation_refs.clone();
         let automation_ref_next = automation_ref_next.clone();
+        let selected_frame_selector = selected_frame_selector.clone();
         webview.connect_load_changed(move |_, _| {
             dom_editable.set(false);
             automation_refs.borrow_mut().clear();
             automation_ref_next.set(2);
+            *selected_frame_selector.borrow_mut() = None;
         });
     }
 
@@ -5079,6 +5225,7 @@ fn create_browser_widget(
         dom_editable,
         automation_refs,
         automation_ref_next,
+        selected_frame_selector,
     };
 
     {
