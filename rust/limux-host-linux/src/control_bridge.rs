@@ -21,6 +21,7 @@ const METHODS: &[&str] = &[
     "system.capabilities",
     "workspace.current",
     "workspace.list",
+    "sidebar.state",
     "workspace.create",
     "workspace.select",
     "workspace.rename",
@@ -167,6 +168,10 @@ pub enum ControlCommand {
         reply: mpsc::Sender<BridgeResult>,
     },
     ListWorkspaces {
+        reply: mpsc::Sender<BridgeResult>,
+    },
+    SidebarState {
+        target: WorkspaceTarget,
         reply: mpsc::Sender<BridgeResult>,
     },
     ListPanes {
@@ -373,6 +378,7 @@ impl ControlCommand {
             Self::Identify { reply, .. }
             | Self::CurrentWorkspace { reply }
             | Self::ListWorkspaces { reply }
+            | Self::SidebarState { reply, .. }
             | Self::ListPanes { reply, .. }
             | Self::ListPaneSurfaces { reply, .. }
             | Self::CreatePane { reply, .. }
@@ -713,6 +719,14 @@ fn handle_method(
         "workspace.list" | "list-workspaces" => {
             let (reply, rx) = mpsc::channel();
             (ControlCommand::ListWorkspaces { reply }, rx)
+        }
+        "sidebar.state" | "sidebar-state" => {
+            let target = match parse_optional_workspace_target(params, true) {
+                Ok(target) => target,
+                Err(error) => return error_response(id, error),
+            };
+            let (reply, rx) = mpsc::channel();
+            (ControlCommand::SidebarState { target, reply }, rx)
         }
         "pane.list" | "list-panes" => {
             let target = match parse_optional_workspace_target(params, true) {
@@ -2329,6 +2343,23 @@ mod tests {
 
         assert_eq!(response.error, None);
         assert_eq!(response.result.expect("result")["url"], "https://example.com");
+    }
+
+    #[test]
+    fn sidebar_state_route_accepts_workspace_names() {
+        let response = dispatch_request(
+            r#"{"id":1,"method":"sidebar.state","params":{"workspace_id":"codex"}}"#,
+            &|command| match command {
+                ControlCommand::SidebarState { target, reply } => {
+                    assert_eq!(target, WorkspaceTarget::Name("codex".to_string()));
+                    let _ = reply.send(Ok(json!({ "workspace_id": "codex" })));
+                }
+                other => panic!("unexpected command: {other:?}"),
+            },
+        );
+
+        assert_eq!(response.error, None);
+        assert_eq!(response.result.expect("result")["workspace_id"], "codex");
     }
 
     #[test]

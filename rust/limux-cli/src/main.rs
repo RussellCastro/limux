@@ -2335,6 +2335,15 @@ async fn run_sidebar_state(client: &mut Client, args: &[String]) -> Result<Value
         .or_else(|| env::var("LIMUX_WORKSPACE_ID").ok())
         .ok_or_else(|| anyhow!("sidebar-state requires --workspace <id|ref>"))?;
 
+    match client
+        .call("sidebar.state", json!({ "workspace_id": workspace.clone() }))
+        .await
+    {
+        Ok(payload) => return Ok(payload),
+        Err(error) if error.to_string().starts_with("-32601:") => {}
+        Err(error) => return Err(error),
+    }
+
     let listed = client.call("workspace.list", json!({})).await?;
     let rows = listed
         .get("workspaces")
@@ -3631,9 +3640,12 @@ async fn execute_command(client: &mut Client, opts: &GlobalOptions) -> Result<Co
                 let cwd = get_string(&payload, &["cwd"]).unwrap_or_else(|| "none".to_string());
                 let git_branch =
                     get_string(&payload, &["git_branch"]).unwrap_or_else(|| "none".to_string());
+                let unread = payload.get("unread").and_then(Value::as_bool).unwrap_or(false);
+                let latest_notification = get_string(&payload, &["latest_notification"])
+                    .unwrap_or_else(|| "none".to_string());
                 CommandOutput::Text(format!(
-                    "workspace={}\ncwd={}\ngit_branch={}",
-                    workspace, cwd, git_branch
+                    "workspace={}\ncwd={}\ngit_branch={}\nunread={}\nlatest_notification={}",
+                    workspace, cwd, git_branch, unread, latest_notification
                 ))
             }
         }

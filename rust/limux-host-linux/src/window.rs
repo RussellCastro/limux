@@ -248,6 +248,70 @@ fn workspace_payload(state: &AppState, index: usize) -> Option<serde_json::Value
     }))
 }
 
+fn git_branch_for_cwd(cwd: &str) -> Option<String> {
+    let cwd = cwd.trim();
+    if cwd.is_empty() || cwd == "none" {
+        return None;
+    }
+
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .arg("rev-parse")
+        .arg("--abbrev-ref")
+        .arg("HEAD")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!branch.is_empty()).then_some(branch)
+}
+
+fn sidebar_state_payload(
+    state: &AppState,
+    index: usize,
+    git_branch: Option<String>,
+) -> Option<serde_json::Value> {
+    let workspace = state.workspaces.get(index)?;
+    let cwd = workspace
+        .cwd
+        .borrow()
+        .clone()
+        .filter(|cwd| !cwd.trim().is_empty())
+        .unwrap_or_else(|| "none".to_string());
+    let latest_notification = if workspace.unread && workspace.notify_label.is_visible() {
+        let message = workspace.notify_label.label().to_string();
+        if message.trim().is_empty() {
+            "none".to_string()
+        } else {
+            message
+        }
+    } else {
+        "none".to_string()
+    };
+
+    Some(serde_json::json!({
+        "workspace_id": workspace.id.as_str(),
+        "workspace_ref": workspace_ref(&workspace.id),
+        "workspace": workspace_row(index, state.active_idx, workspace),
+        "title": workspace.name.as_str(),
+        "name": workspace.name.as_str(),
+        "selected": index == state.active_idx,
+        "focused": index == state.active_idx,
+        "cwd": cwd,
+        "git_branch": git_branch.unwrap_or_else(|| "none".to_string()),
+        "unread": workspace.unread,
+        "latest_notification": latest_notification.clone(),
+        "notification_text": latest_notification,
+        "ports": [],
+        "linked_pr": serde_json::Value::Null,
+        "pr_status": "none",
+    }))
+}
+
 fn focused_surface_payload(state: &State) -> Option<serde_json::Value> {
     let (workspace_id, workspace_name, pane_widget) = {
         let app_state = state.borrow();
@@ -4054,6 +4118,36 @@ fn handle_control_command(state: &State, command: ControlCommand) {
                     .collect::<Vec<_>>()
             };
             let _ = reply.send(Ok(serde_json::json!({ "workspaces": workspaces })));
+        }
+        ControlCommand::SidebarState { target, reply } => {
+            let resolved = {
+                let app_state = state.borrow();
+                workspace_index_for_target(&app_state, &target)
+            };
+
+            let Some(index) = resolved else {
+                let _ = reply.send(Err(crate::control_bridge::BridgeError::not_found(
+                    "workspace not found",
+                )));
+                return;
+            };
+
+            let cwd = {
+                let app_state = state.borrow();
+                app_state.workspaces[index]
+                    .cwd
+                    .borrow()
+                    .clone()
+                    .filter(|cwd| !cwd.trim().is_empty())
+            };
+            let git_branch = cwd.as_deref().and_then(git_branch_for_cwd);
+            let result = {
+                let app_state = state.borrow();
+                sidebar_state_payload(&app_state, index, git_branch)
+            };
+            let _ = reply.send(result.ok_or_else(|| {
+                crate::control_bridge::BridgeError::not_found("workspace not found")
+            }));
         }
         ControlCommand::ListPanes { target, reply } => {
             let resolved = {
