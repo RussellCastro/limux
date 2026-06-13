@@ -220,6 +220,69 @@ fn parse_browser_json_result(
 }
 
 #[cfg(feature = "webkit")]
+fn browser_eval_script(script: &str) -> String {
+    let script = serde_json::to_string(script).unwrap_or_else(|_| "\"\"".to_string());
+    format!(
+        r#"
+(() => {{
+  const source = {script};
+  const seen = new WeakSet();
+  const clip = (value, limit = 500) => String(value == null ? '' : value)
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, limit);
+  const valueType = (value) => {{
+    if (value === null) return 'null';
+    if (Array.isArray(value)) return 'array';
+    return typeof value;
+  }};
+  const normalize = (value, depth = 0) => {{
+    if (value === null) return null;
+    const type = typeof value;
+    if (type === 'string' || type === 'boolean') return value;
+    if (type === 'number') return Number.isFinite(value) ? value : String(value);
+    if (type === 'bigint') return value.toString();
+    if (type === 'undefined') return null;
+    if (type === 'symbol' || type === 'function') return String(value);
+    if (depth >= 5) return `[${{Object.prototype.toString.call(value).slice(8, -1)}}]`;
+    if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value.toISOString();
+    if (value instanceof Element) {{
+      return {{
+        tagName: value.tagName.toLowerCase(),
+        id: value.id || '',
+        className: typeof value.className === 'string' ? value.className : '',
+        text: clip(value.innerText || value.textContent),
+      }};
+    }}
+    if (type === 'object') {{
+      if (seen.has(value)) return '[Circular]';
+      seen.add(value);
+      if (Array.isArray(value)) return value.slice(0, 200).map((item) => normalize(item, depth + 1));
+      const out = {{}};
+      for (const [key, item] of Object.entries(value).slice(0, 200)) {{
+        out[key] = normalize(item, depth + 1);
+      }}
+      return out;
+    }}
+    return String(value);
+  }};
+  try {{
+    const value = eval(source);
+    return JSON.stringify({{ ok: true, value: normalize(value), value_type: valueType(value) }});
+  }} catch (error) {{
+    return JSON.stringify({{
+      ok: false,
+      error: String(error && error.message ? error.message : error),
+      name: String(error && error.name ? error.name : 'Error'),
+      stack: String(error && error.stack ? error.stack : ''),
+    }});
+  }}
+}})()
+"#
+    )
+}
+
+#[cfg(feature = "webkit")]
 fn browser_ref_key(raw: &str) -> Option<String> {
     let value = raw.trim().trim_start_matches('@');
     let rest = value.strip_prefix('e')?;
@@ -3910,6 +3973,14 @@ impl BrowserControlHandle {
         self.handles.evaluate_javascript(script, on_result)
     }
 
+    pub(crate) fn evaluate_user_script(
+        &self,
+        script: String,
+        on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
+    ) {
+        self.handles.evaluate_user_script(script, on_result)
+    }
+
     pub(crate) fn snapshot(
         &self,
         on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
@@ -4061,6 +4132,16 @@ impl BrowserHandles {
                 Err(error) => on_result(Err(error.to_string())),
             },
         );
+    }
+
+    fn evaluate_user_script(
+        &self,
+        script: String,
+        on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
+    ) {
+        self.evaluate_javascript(browser_eval_script(&script), move |result| {
+            parse_browser_json_result("browser.eval", result, on_result)
+        });
     }
 
     fn snapshot(&self, on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static) {
@@ -4376,6 +4457,14 @@ impl BrowserHandles {
     }
 
     fn evaluate_javascript(
+        &self,
+        _script: String,
+        on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
+    ) {
+        on_result(Err("browser.eval requires WebKit support".to_string()));
+    }
+
+    fn evaluate_user_script(
         &self,
         _script: String,
         on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,

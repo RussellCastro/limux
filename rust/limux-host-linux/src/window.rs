@@ -4739,11 +4739,24 @@ fn handle_control_command(state: &State, command: ControlCommand) {
             };
 
             let payload = browser_control_payload(&workspace_id, &surface_id, &handle);
-            handle.evaluate_javascript(script, move |result| match result {
+            handle.evaluate_user_script(script, move |result| match result {
                 Ok(value) => {
+                    let (value, value_type) = match value {
+                        serde_json::Value::Object(mut eval_map) => {
+                            let value_type = eval_map.remove("value_type");
+                            let value = eval_map
+                                .remove("value")
+                                .unwrap_or_else(|| serde_json::Value::Object(eval_map));
+                            (value, value_type)
+                        }
+                        value => (value, None),
+                    };
                     let mut payload = payload;
                     if let Some(map) = payload.as_object_mut() {
                         map.insert("value".to_string(), value);
+                        if let Some(value_type) = value_type {
+                            map.insert("value_type".to_string(), value_type);
+                        }
                         map.insert("ok".to_string(), serde_json::Value::Bool(true));
                     }
                     let _ = reply.send(Ok(payload));

@@ -77,7 +77,7 @@ not only the standalone dispatcher. The live bridge supports workspace, pane,
 surface, terminal send/key/read/health, notification, and terminal pane-create
 commands. The live browser bridge has a small first slice for open-split,
 navigate, back/forward/reload, webview focus/focus-state, URL/title/get
-lookup, basic JS eval, DOM/ARIA snapshot/find, selector or `@eN` ref
+lookup, JSON-typed JS eval, DOM/ARIA snapshot/find, selector or `@eN` ref
 click/fill/type/select/check/focus/hover/dblclick,
 scroll/scroll-into-view, key actions, page-level cookies/storage commands,
 browser tab list/new/switch/close, and immediate wait checks; screenshots,

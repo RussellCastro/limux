@@ -22,7 +22,7 @@ Limux has **two control servers**:
    select,rename,close}`, `pane.list`, `pane.surfaces`, `surface.list`,
    `pane.create` for terminal self-spawn, `surface.send_text`,
    `surface.send_key`, `surface.read_text`, `surface.health`, and
-   `notification.create`. It now supports a first browser-command slice: `browser.open_split`, `browser.navigate`, `browser.back`, `browser.forward`, `browser.reload`, `browser.focus_webview`, `browser.is_webview_focused`, `browser.url.get`, `browser.get.title`, basic `browser.eval`, `browser.snapshot`, `browser.find.*`, `browser.click`, `browser.fill`, `browser.type`, `browser.check`, `browser.uncheck`, `browser.select`, `browser.focus`, `browser.hover`, `browser.dblclick`, `browser.scroll`, `browser.scroll_into_view`, `browser.press`, `browser.keydown`, `browser.keyup`, page-level `browser.cookies.{get,set,clear}`, `browser.storage.{get,set,clear}`, `browser.tab.{list,new,switch,close}`, `browser.get.{text,html,value,attr,count,box,styles}`, and immediate `browser.wait` readiness checks. The snapshot/find refs are DOM/ARIA-derived, in-memory, and reset on page load rather than full platform accessibility handles. It still does **NOT** support screenshots, polling wait/timeout semantics, browser profile import, full accessibility-tree parity, or frame-stable refs on the live GTK bridge.
+   `notification.create`. It now supports a first browser-command slice: `browser.open_split`, `browser.navigate`, `browser.back`, `browser.forward`, `browser.reload`, `browser.focus_webview`, `browser.is_webview_focused`, `browser.url.get`, `browser.get.title`, `browser.eval` with JSON-compatible value serialization, `browser.snapshot`, `browser.find.*`, `browser.click`, `browser.fill`, `browser.type`, `browser.check`, `browser.uncheck`, `browser.select`, `browser.focus`, `browser.hover`, `browser.dblclick`, `browser.scroll`, `browser.scroll_into_view`, `browser.press`, `browser.keydown`, `browser.keyup`, page-level `browser.cookies.{get,set,clear}`, `browser.storage.{get,set,clear}`, `browser.tab.{list,new,switch,close}`, `browser.get.{text,html,value,attr,count,box,styles}`, and immediate `browser.wait` readiness checks. The snapshot/find refs are DOM/ARIA-derived, in-memory, and reset on page load rather than full platform accessibility handles. It still does **NOT** support screenshots, polling wait/timeout semantics, browser profile import, full accessibility-tree parity, or frame-stable refs on the live GTK bridge.
 
 When the GUI is running, the CLI targets the bridge via the runtime
 socket. `list-panes` / `list-panels`, terminal `new-pane --command ...`,
@@ -70,7 +70,7 @@ dispatcher parity.
 
 **Still open (priority order):**
 
-- Browser command bridge parity beyond the first live slice: screenshots, polling waits, browser profile import, full accessibility-tree parity, frame-stable refs, and richer eval result serialization.
+- Browser command bridge parity beyond the first live slice: screenshots, polling waits, browser profile import, full accessibility-tree parity, and frame-stable refs.
 
 ### Phase 3 — `limux notify` + GUI toast/sidebar integration ✅
 `ControlCommand::CreateNotification` wired through the bridge into
