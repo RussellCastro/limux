@@ -1,8 +1,8 @@
 # cmux parity contract
 
-This document is the source of truth for Limux parity with
-`manaflow-ai/cmux`. Keep it current when adding, removing, or re-scoping
-cmux-compatible behavior.
+This document is the source of truth for this personal fork's cmux parity
+work against `manaflow-ai/cmux`. Keep it current when adding, removing, or
+re-scoping cmux-compatible behavior.
 
 The tracked capability set is based on the cmux README feature surface as of
 2026-06-13. Re-check upstream cmux before changing the required set. Use these
@@ -49,7 +49,10 @@ Each tracked capability must keep a marker in this exact form so
 
 ## Parity Rules
 
-- Prefer upstreamable Limux changes over long-lived fork-only behavior.
+- Keep changes rebaseable onto upstream Limux, but optimize this branch for
+  the personal cmux-style Linux workflow.
+- Upstream PRs are optional and should be limited to mature, self-contained
+  changes with clear maintainer traction.
 - Reimplement cmux behavior from public behavior and docs; do not copy GPL
   cmux implementation code into Limux's MIT-licensed codebase.
 - A feature is not `complete` until the user-visible behavior is documented
