@@ -22,7 +22,7 @@ Limux has **two control servers**:
    select,rename,close}`, `pane.list`, `pane.surfaces`, `surface.list`,
    `pane.create` for terminal self-spawn, `surface.send_text`,
    `surface.send_key`, `surface.read_text`, `surface.health`, and
-   `notification.create`. It now supports a first browser-command slice: `browser.open_split`, `browser.navigate`, `browser.url.get`, `browser.get.title`, and basic `browser.eval`. It still does **NOT** support accessibility snapshots, element refs, click/fill/type, screenshots, wait, cookies/storage, or tab lifecycle on the live GTK bridge.
+   `notification.create`. It now supports a first browser-command slice: `browser.open_split`, `browser.navigate`, `browser.url.get`, `browser.get.title`, basic `browser.eval`, `browser.snapshot`, `browser.click`, and `browser.fill`. The snapshot is DOM/ARIA-derived rather than a full platform accessibility tree. It still does **NOT** support stable element-ref actions, type, screenshots, wait, cookies/storage, tab lifecycle, or richer get/action commands on the live GTK bridge.
 
 When the GUI is running, the CLI targets the bridge via the runtime
 socket. `list-panes` / `list-panels`, terminal `new-pane --command ...`,
@@ -70,7 +70,7 @@ dispatcher parity.
 
 **Still open (priority order):**
 
-- Browser command bridge parity beyond the first live slice: accessibility snapshots, element refs, click/fill/type, screenshots, wait, cookies/storage, tab lifecycle, and richer eval result serialization.
+- Browser command bridge parity beyond the first live slice: stable element refs, type, screenshots, wait, cookies/storage, tab lifecycle, richer get/action commands, full accessibility-tree parity, and richer eval result serialization.
 
 ### Phase 3 — `limux notify` + GUI toast/sidebar integration ✅
 `ControlCommand::CreateNotification` wired through the bridge into

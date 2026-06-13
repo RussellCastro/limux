@@ -45,6 +45,232 @@ fn reserve_pane_id(id: u32) {
     }
 }
 
+#[cfg(feature = "webkit")]
+const BROWSER_SNAPSHOT_SCRIPT: &str = r#"
+(() => {
+  const clip = (value, limit = 180) => String(value == null ? '' : value)
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, limit);
+  const quote = (value) => clip(value)
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"');
+  const cssEscape = (value) => {
+    if (window.CSS && CSS.escape) return CSS.escape(value);
+    return String(value).replace(/[^a-zA-Z0-9_-]/g, '\\$&');
+  };
+  const attrSelector = (name, value) => `[${name}="${String(value).replace(/"/g, '\\"')}"]`;
+  const selectorFor = (el) => {
+    if (!el || !el.localName) return '';
+    if (el.id) return `#${cssEscape(el.id)}`;
+    for (const attr of ['data-testid', 'data-test', 'name', 'aria-label']) {
+      const value = el.getAttribute(attr);
+      if (value) return `${el.localName.toLowerCase()}${attrSelector(attr, value)}`;
+    }
+    const parts = [];
+    let node = el;
+    while (node && node.nodeType === Node.ELEMENT_NODE && node !== document.body && parts.length < 4) {
+      let part = node.localName.toLowerCase();
+      if (node.id) {
+        parts.unshift(`#${cssEscape(node.id)}`);
+        break;
+      }
+      const parent = node.parentElement;
+      if (parent) {
+        const siblings = Array.from(parent.children).filter((child) => child.localName === node.localName);
+        if (siblings.length > 1) part += `:nth-of-type(${siblings.indexOf(node) + 1})`;
+      }
+      parts.unshift(part);
+      node = parent;
+    }
+    return parts.length ? parts.join(' > ') : el.localName.toLowerCase();
+  };
+  const implicitRole = (el) => {
+    const explicit = el.getAttribute('role');
+    if (explicit) return explicit;
+    const tag = el.localName.toLowerCase();
+    const type = (el.getAttribute('type') || '').toLowerCase();
+    if (tag === 'a' && el.hasAttribute('href')) return 'link';
+    if (tag === 'button' || type === 'button' || type === 'submit') return 'button';
+    if (tag === 'textarea' || ['email', 'password', 'search', 'tel', 'text', 'url'].includes(type)) return 'textbox';
+    if (type === 'checkbox') return 'checkbox';
+    if (type === 'radio') return 'radio';
+    if (tag === 'select') return 'combobox';
+    if (/^h[1-6]$/.test(tag)) return 'heading';
+    if (tag === 'li') return 'listitem';
+    if (tag === 'label') return 'label';
+    return tag === 'p' ? 'paragraph' : tag;
+  };
+  const nameFor = (el) => {
+    const labelledBy = el.getAttribute('aria-labelledby');
+    if (labelledBy) {
+      const labelled = labelledBy.split(/\s+/)
+        .map((id) => document.getElementById(id))
+        .filter(Boolean)
+        .map((node) => clip(node.innerText || node.textContent))
+        .filter(Boolean)
+        .join(' ');
+      if (labelled) return clip(labelled);
+    }
+    for (const attr of ['aria-label', 'alt', 'title', 'placeholder', 'value']) {
+      const value = el.getAttribute(attr);
+      if (value) return clip(value);
+    }
+    if (el.labels && el.labels.length) {
+      const labels = Array.from(el.labels).map((label) => clip(label.innerText || label.textContent)).filter(Boolean).join(' ');
+      if (labels) return clip(labels);
+    }
+    return clip(el.innerText || el.textContent);
+  };
+  const isVisible = (el) => {
+    if (!el || !(el instanceof Element)) return false;
+    const style = window.getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden') return false;
+    if (el.tagName === 'BODY' || el.tagName === 'HTML') return true;
+    return el.getClientRects().length > 0;
+  };
+  const selector = [
+    'a[href]', 'button', 'input', 'textarea', 'select', 'summary',
+    '[role]', '[aria-label]', '[alt]', '[title]', '[contenteditable="true"]',
+    '[tabindex]:not([tabindex="-1"])', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+    'p', 'li', 'label'
+  ].join(',');
+  const refs = {};
+  const nodes = [];
+  const lines = [];
+  const documentName = clip(document.title || window.location.href || 'document');
+  refs.e1 = { role: 'document', name: documentName, selector: 'document' };
+  nodes.push({ role: 'document', name: documentName, selector: 'document', ref: 'e1' });
+  lines.push(`- document "${quote(documentName)}"`);
+  let refIndex = 2;
+  for (const el of Array.from(document.querySelectorAll(selector))) {
+    if (refIndex > 80) break;
+    if (!isVisible(el)) continue;
+    const role = implicitRole(el);
+    const name = nameFor(el);
+    const isField = ['textbox', 'checkbox', 'radio', 'combobox'].includes(role);
+    if (!name && !isField) continue;
+    const ref = `e${refIndex++}`;
+    const node = {
+      role,
+      name,
+      selector: selectorFor(el),
+      tag: el.localName.toLowerCase(),
+      ref,
+    };
+    if (el.id) node.id = el.id;
+    if (el.getAttribute('type')) node.type = el.getAttribute('type');
+    refs[ref] = { role: node.role, name: node.name, selector: node.selector };
+    nodes.push(node);
+    const selectorText = node.selector ? ` selector="${quote(node.selector)}"` : '';
+    lines.push(`  - ref=${ref} ${node.role}${selectorText} "${quote(node.name)}"`);
+  }
+  const bodyText = clip(document.body ? document.body.innerText : '', 4000);
+  if (nodes.length === 1 && bodyText) {
+    refs.e2 = { role: 'text', name: bodyText, selector: 'body' };
+    nodes.push({ role: 'text', name: bodyText, selector: 'body', ref: 'e2' });
+    lines.push(`  - ref=e2 text selector="body" "${quote(bodyText)}"`);
+  }
+  return JSON.stringify({
+    url: window.location.href || '',
+    title: document.title || '',
+    snapshot: lines.join('\n'),
+    text: bodyText || documentName,
+    refs,
+    nodes,
+  });
+})()
+"#;
+
+#[cfg(feature = "webkit")]
+fn parse_browser_json_result(
+    action: &str,
+    result: Result<serde_json::Value, String>,
+    on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
+) {
+    match result {
+        Ok(serde_json::Value::String(payload)) => {
+            match serde_json::from_str::<serde_json::Value>(&payload) {
+                Ok(value) => {
+                    if value.get("ok").and_then(serde_json::Value::as_bool) == Some(false) {
+                        let error = value
+                            .get("error")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("browser action failed")
+                            .to_string();
+                        on_result(Err(error));
+                    } else {
+                        on_result(Ok(value));
+                    }
+                }
+                Err(error) => on_result(Err(format!(
+                    "{action} returned invalid JSON: {error}"
+                ))),
+            }
+        }
+        Ok(value) => on_result(Err(format!(
+            "{action} returned unexpected value: {value}"
+        ))),
+        Err(error) => on_result(Err(error)),
+    }
+}
+
+#[cfg(feature = "webkit")]
+fn browser_click_script(selector: &str) -> String {
+    let selector = serde_json::to_string(selector).unwrap_or_else(|_| "\"\"".to_string());
+    format!(
+        r#"
+(() => {{
+  const selector = {selector};
+  const el = document.querySelector(selector);
+  if (!el) {{
+    return JSON.stringify({{
+      ok: false,
+      selector,
+      error: 'element not found; snapshot: run browser.snapshot; hint: verify selector',
+    }});
+  }}
+  if (el.scrollIntoView) el.scrollIntoView({{ block: 'center', inline: 'center' }});
+  try {{ el.focus({{ preventScroll: true }}); }} catch (_) {{ try {{ el.focus(); }} catch (_) {{}} }}
+  el.click();
+  return JSON.stringify({{ ok: true, selector }});
+}})()
+"#
+    )
+}
+
+#[cfg(feature = "webkit")]
+fn browser_fill_script(selector: &str, text: &str) -> String {
+    let selector = serde_json::to_string(selector).unwrap_or_else(|_| "\"\"".to_string());
+    let text = serde_json::to_string(text).unwrap_or_else(|_| "\"\"".to_string());
+    format!(
+        r#"
+(() => {{
+  const selector = {selector};
+  const value = {text};
+  const el = document.querySelector(selector);
+  if (!el) {{
+    return JSON.stringify({{
+      ok: false,
+      selector,
+      error: 'element not found; snapshot: run browser.snapshot; hint: verify selector',
+    }});
+  }}
+  if (el.scrollIntoView) el.scrollIntoView({{ block: 'center', inline: 'center' }});
+  try {{ el.focus({{ preventScroll: true }}); }} catch (_) {{ try {{ el.focus(); }} catch (_) {{}} }}
+  if ('value' in el) {{
+    el.value = value;
+  }} else {{
+    el.textContent = value;
+  }}
+  el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+  el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+  return JSON.stringify({{ ok: true, selector, value }});
+}})()
+"#
+    )
+}
+
 fn pane_id_for_initial_state(initial_state: Option<&PaneState>) -> u32 {
     if let Some(id) = initial_state
         .and_then(|state| state.pane_id)
@@ -2966,6 +3192,30 @@ impl BrowserControlHandle {
     ) {
         self.handles.evaluate_javascript(script, on_result)
     }
+
+    pub(crate) fn snapshot(
+        &self,
+        on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
+    ) {
+        self.handles.snapshot(on_result)
+    }
+
+    pub(crate) fn click(
+        &self,
+        selector: String,
+        on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
+    ) {
+        self.handles.click(selector, on_result)
+    }
+
+    pub(crate) fn fill(
+        &self,
+        selector: String,
+        text: String,
+        on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
+    ) {
+        self.handles.fill(selector, text, on_result)
+    }
 }
 
 #[cfg(feature = "webkit")]
@@ -3030,6 +3280,33 @@ impl BrowserHandles {
                 Err(error) => on_result(Err(error.to_string())),
             },
         );
+    }
+
+    fn snapshot(&self, on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static) {
+        self.evaluate_javascript(BROWSER_SNAPSHOT_SCRIPT.to_string(), move |result| {
+            parse_browser_json_result("browser.snapshot", result, on_result)
+        });
+    }
+
+    fn click(
+        &self,
+        selector: String,
+        on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
+    ) {
+        self.evaluate_javascript(browser_click_script(&selector), move |result| {
+            parse_browser_json_result("browser.click", result, on_result)
+        });
+    }
+
+    fn fill(
+        &self,
+        selector: String,
+        text: String,
+        on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
+    ) {
+        self.evaluate_javascript(browser_fill_script(&selector, &text), move |result| {
+            parse_browser_json_result("browser.fill", result, on_result)
+        });
     }
 
     fn focus_location(&self) -> bool {
@@ -3182,6 +3459,27 @@ impl BrowserHandles {
         on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
     ) {
         on_result(Err("browser.eval requires WebKit support".to_string()));
+    }
+
+    fn snapshot(&self, on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static) {
+        on_result(Err("browser.snapshot requires WebKit support".to_string()));
+    }
+
+    fn click(
+        &self,
+        _selector: String,
+        on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
+    ) {
+        on_result(Err("browser.click requires WebKit support".to_string()));
+    }
+
+    fn fill(
+        &self,
+        _selector: String,
+        _text: String,
+        on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
+    ) {
+        on_result(Err("browser.fill requires WebKit support".to_string()));
     }
 
     fn focus_location(&self) -> bool {

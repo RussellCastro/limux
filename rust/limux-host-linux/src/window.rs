@@ -4394,6 +4394,166 @@ fn handle_control_command(state: &State, command: ControlCommand) {
                 }
             });
         }
+        ControlCommand::BrowserSnapshot {
+            target,
+            surface_hint,
+            reply,
+        } => {
+            let resolved = {
+                let app_state = state.borrow();
+                workspace_index_for_target(&app_state, &target)
+            };
+
+            let Some(index) = resolved else {
+                let _ = reply.send(Err(crate::control_bridge::BridgeError::not_found(
+                    "workspace not found",
+                )));
+                return;
+            };
+
+            let target = {
+                let app_state = state.borrow();
+                let workspace = &app_state.workspaces[index];
+                pane::browser_handle_for_root(&workspace.root, surface_hint.as_deref()).map(
+                    |(surface_id, handle)| (workspace.id.clone(), surface_id, handle),
+                )
+            };
+
+            let Some((workspace_id, surface_id, handle)) = target else {
+                let _ = reply.send(Err(crate::control_bridge::BridgeError::not_found(
+                    "browser surface not found",
+                )));
+                return;
+            };
+
+            let payload = browser_control_payload(&workspace_id, &surface_id, &handle);
+            handle.snapshot(move |result| match result {
+                Ok(snapshot) => {
+                    let mut payload = payload;
+                    if let (Some(payload_map), Some(snapshot_map)) =
+                        (payload.as_object_mut(), snapshot.as_object())
+                    {
+                        for (key, value) in snapshot_map {
+                            payload_map.insert(key.clone(), value.clone());
+                        }
+                        payload_map.insert("ok".to_string(), serde_json::Value::Bool(true));
+                    }
+                    let _ = reply.send(Ok(payload));
+                }
+                Err(error) => {
+                    let _ = reply.send(Err(crate::control_bridge::BridgeError::internal(
+                        format!("browser.snapshot failed: {error}"),
+                    )));
+                }
+            });
+        }
+        ControlCommand::BrowserClick {
+            target,
+            surface_hint,
+            selector,
+            reply,
+        } => {
+            let resolved = {
+                let app_state = state.borrow();
+                workspace_index_for_target(&app_state, &target)
+            };
+
+            let Some(index) = resolved else {
+                let _ = reply.send(Err(crate::control_bridge::BridgeError::not_found(
+                    "workspace not found",
+                )));
+                return;
+            };
+
+            let target = {
+                let app_state = state.borrow();
+                let workspace = &app_state.workspaces[index];
+                pane::browser_handle_for_root(&workspace.root, surface_hint.as_deref()).map(
+                    |(surface_id, handle)| (workspace.id.clone(), surface_id, handle),
+                )
+            };
+
+            let Some((workspace_id, surface_id, handle)) = target else {
+                let _ = reply.send(Err(crate::control_bridge::BridgeError::not_found(
+                    "browser surface not found",
+                )));
+                return;
+            };
+
+            let payload = browser_control_payload(&workspace_id, &surface_id, &handle);
+            handle.click(selector, move |result| match result {
+                Ok(action) => {
+                    let mut payload = payload;
+                    if let (Some(payload_map), Some(action_map)) =
+                        (payload.as_object_mut(), action.as_object())
+                    {
+                        for (key, value) in action_map {
+                            payload_map.insert(key.clone(), value.clone());
+                        }
+                    }
+                    let _ = reply.send(Ok(payload));
+                }
+                Err(error) => {
+                    let _ = reply.send(Err(crate::control_bridge::BridgeError::internal(
+                        format!("browser.click failed: {error}"),
+                    )));
+                }
+            });
+        }
+        ControlCommand::BrowserFill {
+            target,
+            surface_hint,
+            selector,
+            text,
+            reply,
+        } => {
+            let resolved = {
+                let app_state = state.borrow();
+                workspace_index_for_target(&app_state, &target)
+            };
+
+            let Some(index) = resolved else {
+                let _ = reply.send(Err(crate::control_bridge::BridgeError::not_found(
+                    "workspace not found",
+                )));
+                return;
+            };
+
+            let target = {
+                let app_state = state.borrow();
+                let workspace = &app_state.workspaces[index];
+                pane::browser_handle_for_root(&workspace.root, surface_hint.as_deref()).map(
+                    |(surface_id, handle)| (workspace.id.clone(), surface_id, handle),
+                )
+            };
+
+            let Some((workspace_id, surface_id, handle)) = target else {
+                let _ = reply.send(Err(crate::control_bridge::BridgeError::not_found(
+                    "browser surface not found",
+                )));
+                return;
+            };
+
+            let payload = browser_control_payload(&workspace_id, &surface_id, &handle);
+            handle.fill(selector, text, move |result| match result {
+                Ok(action) => {
+                    let mut payload = payload;
+                    if let (Some(payload_map), Some(action_map)) =
+                        (payload.as_object_mut(), action.as_object())
+                    {
+                        for (key, value) in action_map {
+                            payload_map.insert(key.clone(), value.clone());
+                        }
+                    }
+                    let _ = reply.send(Ok(payload));
+                }
+                Err(error) => {
+                    let _ = reply.send(Err(crate::control_bridge::BridgeError::internal(
+                        format!("browser.fill failed: {error}"),
+                    )));
+                }
+            });
+        }
         ControlCommand::ListSurfaces { target, reply } => {
             let resolved = {
                 let app_state = state.borrow();

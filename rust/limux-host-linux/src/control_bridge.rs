@@ -38,6 +38,9 @@ const METHODS: &[&str] = &[
     "browser.url.get",
     "browser.get.title",
     "browser.eval",
+    "browser.snapshot",
+    "browser.click",
+    "browser.fill",
     "notification.create",
 ];
 
@@ -156,6 +159,24 @@ pub enum ControlCommand {
         script: String,
         reply: mpsc::Sender<BridgeResult>,
     },
+    BrowserSnapshot {
+        target: WorkspaceTarget,
+        surface_hint: Option<String>,
+        reply: mpsc::Sender<BridgeResult>,
+    },
+    BrowserClick {
+        target: WorkspaceTarget,
+        surface_hint: Option<String>,
+        selector: String,
+        reply: mpsc::Sender<BridgeResult>,
+    },
+    BrowserFill {
+        target: WorkspaceTarget,
+        surface_hint: Option<String>,
+        selector: String,
+        text: String,
+        reply: mpsc::Sender<BridgeResult>,
+    },
     ListSurfaces {
         target: WorkspaceTarget,
         reply: mpsc::Sender<BridgeResult>,
@@ -227,6 +248,9 @@ impl ControlCommand {
             | Self::BrowserUrlGet { reply, .. }
             | Self::BrowserTitleGet { reply, .. }
             | Self::BrowserEval { reply, .. }
+            | Self::BrowserSnapshot { reply, .. }
+            | Self::BrowserClick { reply, .. }
+            | Self::BrowserFill { reply, .. }
             | Self::ListSurfaces { reply, .. }
             | Self::SurfaceHealth { reply, .. }
             | Self::ReadSurfaceText { reply, .. }
@@ -649,6 +673,82 @@ fn handle_method(
                     target,
                     surface_hint,
                     script,
+                    reply,
+                },
+                rx,
+            )
+        }
+        "browser.snapshot" => {
+            let target = match parse_optional_workspace_target(params, true) {
+                Ok(target) => target,
+                Err(error) => return error_response(id, error),
+            };
+            let surface_hint =
+                match optional_ref_handle(params, &["surface_id", "id"], "surface:") {
+                    Ok(surface_hint) => surface_hint,
+                    Err(error) => return error_response(id, error),
+                };
+            let (reply, rx) = mpsc::channel();
+            (
+                ControlCommand::BrowserSnapshot {
+                    target,
+                    surface_hint,
+                    reply,
+                },
+                rx,
+            )
+        }
+        "browser.click" => {
+            let Some(selector) = optional_string(params, &["selector"]) else {
+                return error_response(
+                    id,
+                    BridgeError::invalid_params("browser.click requires selector"),
+                );
+            };
+            let target = match parse_optional_workspace_target(params, true) {
+                Ok(target) => target,
+                Err(error) => return error_response(id, error),
+            };
+            let surface_hint =
+                match optional_ref_handle(params, &["surface_id", "id"], "surface:") {
+                    Ok(surface_hint) => surface_hint,
+                    Err(error) => return error_response(id, error),
+                };
+            let (reply, rx) = mpsc::channel();
+            (
+                ControlCommand::BrowserClick {
+                    target,
+                    surface_hint,
+                    selector,
+                    reply,
+                },
+                rx,
+            )
+        }
+        "browser.fill" => {
+            let Some(selector) = optional_string(params, &["selector"]) else {
+                return error_response(
+                    id,
+                    BridgeError::invalid_params("browser.fill requires selector"),
+                );
+            };
+            let target = match parse_optional_workspace_target(params, true) {
+                Ok(target) => target,
+                Err(error) => return error_response(id, error),
+            };
+            let surface_hint =
+                match optional_ref_handle(params, &["surface_id", "id"], "surface:") {
+                    Ok(surface_hint) => surface_hint,
+                    Err(error) => return error_response(id, error),
+                };
+            let text = optional_string(params, &["value", "text"]).unwrap_or_default();
+            let (reply, rx) = mpsc::channel();
+            (
+                ControlCommand::BrowserFill {
+                    target,
+                    surface_hint,
+                    selector,
+                    text,
                     reply,
                 },
                 rx,
@@ -1215,6 +1315,86 @@ mod tests {
 
         assert_eq!(response.error, None);
         assert_eq!(response.result.expect("result")["value"], "Limux");
+    }
+
+    #[test]
+    fn browser_snapshot_route_accepts_surface_refs() {
+        let response = dispatch_request(
+            r#"{"id":1,"method":"browser.snapshot","params":{"surface_id":"surface:9:tab"}}"#,
+            &|command| match command {
+                ControlCommand::BrowserSnapshot {
+                    target,
+                    surface_hint,
+                    reply,
+                } => {
+                    assert_eq!(target, WorkspaceTarget::Active);
+                    assert_eq!(surface_hint, Some("9:tab".to_string()));
+                    let _ = reply.send(Ok(json!({
+                        "snapshot": "- document \"Limux\"",
+                        "text": "Limux",
+                    })));
+                }
+                other => panic!("unexpected command: {other:?}"),
+            },
+        );
+
+        assert_eq!(response.error, None);
+        assert_eq!(response.result.expect("result")["text"], "Limux");
+    }
+
+    #[test]
+    fn browser_action_routes_require_selectors_and_accept_surface_refs() {
+        let missing_selector = dispatch_request(
+            r#"{"id":1,"method":"browser.click","params":{"surface_id":"surface:9:tab"}}"#,
+            &|command| panic!("invalid browser.click should not dispatch: {command:?}"),
+        );
+        assert_eq!(missing_selector.result, None);
+        assert_eq!(
+            missing_selector.error.as_ref().map(|error| error.code),
+            Some(INVALID_PARAMS_CODE)
+        );
+
+        let click_response = dispatch_request(
+            r#"{"id":2,"method":"browser.click","params":{"surface_id":"surface:9:tab","selector":"#submit"}}"#,
+            &|command| match command {
+                ControlCommand::BrowserClick {
+                    target,
+                    surface_hint,
+                    selector,
+                    reply,
+                } => {
+                    assert_eq!(target, WorkspaceTarget::Active);
+                    assert_eq!(surface_hint, Some("9:tab".to_string()));
+                    assert_eq!(selector, "#submit");
+                    let _ = reply.send(Ok(json!({ "ok": true, "selector": selector })));
+                }
+                other => panic!("unexpected command: {other:?}"),
+            },
+        );
+        assert_eq!(click_response.error, None);
+        assert_eq!(click_response.result.expect("result")["selector"], "#submit");
+
+        let fill_response = dispatch_request(
+            r#"{"id":3,"method":"browser.fill","params":{"surface_id":"surface:9:tab","selector":"#name","text":"Ada"}}"#,
+            &|command| match command {
+                ControlCommand::BrowserFill {
+                    target,
+                    surface_hint,
+                    selector,
+                    text,
+                    reply,
+                } => {
+                    assert_eq!(target, WorkspaceTarget::Active);
+                    assert_eq!(surface_hint, Some("9:tab".to_string()));
+                    assert_eq!(selector, "#name");
+                    assert_eq!(text, "Ada");
+                    let _ = reply.send(Ok(json!({ "ok": true, "selector": selector, "value": text })));
+                }
+                other => panic!("unexpected command: {other:?}"),
+            },
+        );
+        assert_eq!(fill_response.error, None);
+        assert_eq!(fill_response.result.expect("result")["value"], "Ada");
     }
 
     #[test]
