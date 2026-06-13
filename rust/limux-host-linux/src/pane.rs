@@ -495,6 +495,96 @@ fn browser_find_script(locator: &str, value: &str, index: Option<usize>) -> Stri
     )
 }
 
+#[cfg(feature = "webkit")]
+fn browser_get_script(kind: &str, selector: Option<&str>, name: Option<&str>) -> String {
+    let kind = serde_json::to_string(kind).unwrap_or_else(|_| "\"\"".to_string());
+    let selector = match selector {
+        Some(selector) => serde_json::to_string(selector).unwrap_or_else(|_| "null".to_string()),
+        None => "null".to_string(),
+    };
+    let name = match name {
+        Some(name) => serde_json::to_string(name).unwrap_or_else(|_| "null".to_string()),
+        None => "null".to_string(),
+    };
+    format!(
+        r#"
+(() => {{
+  const kind = {kind};
+  const selector = {selector};
+  const name = {name};
+  const elements = selector == null ? [document.body].filter(Boolean) : Array.from(document.querySelectorAll(selector));
+  const el = elements[0] || null;
+  const boxFor = (node) => {{
+    const rect = node.getBoundingClientRect();
+    return {{ x: rect.x, y: rect.y, width: rect.width, height: rect.height }};
+  }};
+  if (kind === 'count') {{
+    return JSON.stringify({{ ok: true, count: elements.length }});
+  }}
+  if (!el) {{
+    return JSON.stringify({{ ok: false, error: 'element not found; snapshot: run browser.snapshot; hint: verify selector' }});
+  }}
+  if (kind === 'text') {{
+    const text = el.innerText || el.textContent || '';
+    return JSON.stringify({{ ok: true, text, value: text, selector }});
+  }}
+  if (kind === 'html') {{
+    const html = selector == null ? document.documentElement.outerHTML : el.outerHTML;
+    return JSON.stringify({{ ok: true, html, value: html, selector }});
+  }}
+  if (kind === 'value') {{
+    const value = 'value' in el ? el.value : (el.getAttribute('value') || el.textContent || '');
+    return JSON.stringify({{ ok: true, value, text: value, selector }});
+  }}
+  if (kind === 'attr') {{
+    const value = name ? el.getAttribute(name) : null;
+    return JSON.stringify({{ ok: true, name, value: value == null ? '' : value, selector }});
+  }}
+  if (kind === 'box') {{
+    return JSON.stringify({{ ok: true, box: boxFor(el), selector }});
+  }}
+  if (kind === 'styles') {{
+    const computed = window.getComputedStyle(el);
+    if (name) {{
+      const value = computed.getPropertyValue(name);
+      return JSON.stringify({{ ok: true, property: name, value, styles: {{ [name]: value }}, selector }});
+    }}
+    const styles = {{
+      display: computed.display,
+      visibility: computed.visibility,
+      color: computed.color,
+      backgroundColor: computed.backgroundColor,
+      fontSize: computed.fontSize,
+      fontFamily: computed.fontFamily,
+      position: computed.position,
+    }};
+    return JSON.stringify({{ ok: true, styles, selector }});
+  }}
+  return JSON.stringify({{ ok: false, error: `unsupported browser.get kind: ${{kind}}` }});
+}})()
+"#
+    )
+}
+
+#[cfg(feature = "webkit")]
+fn browser_wait_script(selector: Option<&str>) -> String {
+    let selector = match selector {
+        Some(selector) => serde_json::to_string(selector).unwrap_or_else(|_| "null".to_string()),
+        None => "null".to_string(),
+    };
+    format!(
+        r#"
+(() => {{
+  const selector = {selector};
+  const ready = selector == null
+    ? document.readyState === 'complete' || document.readyState === 'interactive'
+    : document.querySelector(selector) !== null;
+  return JSON.stringify({{ ok: ready, ready, selector, load_state: document.readyState }});
+}})()
+"#
+    )
+}
+
 fn pane_id_for_initial_state(initial_state: Option<&PaneState>) -> u32 {
     if let Some(id) = initial_state
         .and_then(|state| state.pane_id)
@@ -3452,6 +3542,24 @@ impl BrowserControlHandle {
     ) {
         self.handles.find(locator, value, index, on_result)
     }
+
+    pub(crate) fn get(
+        &self,
+        kind: String,
+        selector: Option<String>,
+        name: Option<String>,
+        on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
+    ) {
+        self.handles.get(kind, selector, name, on_result)
+    }
+
+    pub(crate) fn wait(
+        &self,
+        selector: Option<String>,
+        on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
+    ) {
+        self.handles.wait(selector, on_result)
+    }
 }
 
 #[cfg(feature = "webkit")]
@@ -3578,6 +3686,49 @@ impl BrowserHandles {
             let result = parse_browser_json_value("browser.find", result)
                 .map(|value| remember_find_result(&refs, &next_ref, value));
             on_result(result);
+        });
+    }
+
+    fn get(
+        &self,
+        kind: String,
+        selector: Option<String>,
+        name: Option<String>,
+        on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
+    ) {
+        let selector = match selector {
+            Some(selector) => match resolve_browser_selector(&self.automation_refs, &selector) {
+                Ok(selector) => Some(selector),
+                Err(error) => {
+                    on_result(Err(error));
+                    return;
+                }
+            },
+            None => None,
+        };
+        self.evaluate_javascript(
+            browser_get_script(&kind, selector.as_deref(), name.as_deref()),
+            move |result| parse_browser_json_result("browser.get", result, on_result),
+        );
+    }
+
+    fn wait(
+        &self,
+        selector: Option<String>,
+        on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
+    ) {
+        let selector = match selector {
+            Some(selector) => match resolve_browser_selector(&self.automation_refs, &selector) {
+                Ok(selector) => Some(selector),
+                Err(error) => {
+                    on_result(Err(error));
+                    return;
+                }
+            },
+            None => None,
+        };
+        self.evaluate_javascript(browser_wait_script(selector.as_deref()), move |result| {
+            parse_browser_json_result("browser.wait", result, on_result)
         });
     }
 
@@ -3762,6 +3913,24 @@ impl BrowserHandles {
         on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
     ) {
         on_result(Err("browser.find requires WebKit support".to_string()));
+    }
+
+    fn get(
+        &self,
+        _kind: String,
+        _selector: Option<String>,
+        _name: Option<String>,
+        on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
+    ) {
+        on_result(Err("browser.get requires WebKit support".to_string()));
+    }
+
+    fn wait(
+        &self,
+        _selector: Option<String>,
+        on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
+    ) {
+        on_result(Err("browser.wait requires WebKit support".to_string()));
     }
 
     fn focus_location(&self) -> bool {

@@ -37,6 +37,14 @@ const METHODS: &[&str] = &[
     "browser.navigate",
     "browser.url.get",
     "browser.get.title",
+    "browser.get.text",
+    "browser.get.html",
+    "browser.get.value",
+    "browser.get.attr",
+    "browser.get.count",
+    "browser.get.box",
+    "browser.get.styles",
+    "browser.wait",
     "browser.eval",
     "browser.snapshot",
     "browser.find.text",
@@ -163,6 +171,20 @@ pub enum ControlCommand {
         surface_hint: Option<String>,
         reply: mpsc::Sender<BridgeResult>,
     },
+    BrowserGet {
+        target: WorkspaceTarget,
+        surface_hint: Option<String>,
+        kind: String,
+        selector: Option<String>,
+        name: Option<String>,
+        reply: mpsc::Sender<BridgeResult>,
+    },
+    BrowserWait {
+        target: WorkspaceTarget,
+        surface_hint: Option<String>,
+        selector: Option<String>,
+        reply: mpsc::Sender<BridgeResult>,
+    },
     BrowserEval {
         target: WorkspaceTarget,
         surface_hint: Option<String>,
@@ -265,6 +287,8 @@ impl ControlCommand {
             | Self::BrowserNavigate { reply, .. }
             | Self::BrowserUrlGet { reply, .. }
             | Self::BrowserTitleGet { reply, .. }
+            | Self::BrowserGet { reply, .. }
+            | Self::BrowserWait { reply, .. }
             | Self::BrowserEval { reply, .. }
             | Self::BrowserSnapshot { reply, .. }
             | Self::BrowserFind { reply, .. }
@@ -665,6 +689,54 @@ fn handle_method(
                 ControlCommand::BrowserTitleGet {
                     target,
                     surface_hint,
+                    reply,
+                },
+                rx,
+            )
+        }
+        method if method.starts_with("browser.get.") => {
+            let kind = method.trim_start_matches("browser.get.").trim().to_string();
+            let target = match parse_optional_workspace_target(params, true) {
+                Ok(target) => target,
+                Err(error) => return error_response(id, error),
+            };
+            let surface_hint =
+                match optional_ref_handle(params, &["surface_id", "id"], "surface:") {
+                    Ok(surface_hint) => surface_hint,
+                    Err(error) => return error_response(id, error),
+                };
+            let selector = optional_string(params, &["selector"]);
+            let name = optional_string(params, &["name", "property"]);
+            let (reply, rx) = mpsc::channel();
+            (
+                ControlCommand::BrowserGet {
+                    target,
+                    surface_hint,
+                    kind,
+                    selector,
+                    name,
+                    reply,
+                },
+                rx,
+            )
+        }
+        "browser.wait" => {
+            let target = match parse_optional_workspace_target(params, true) {
+                Ok(target) => target,
+                Err(error) => return error_response(id, error),
+            };
+            let surface_hint =
+                match optional_ref_handle(params, &["surface_id", "id"], "surface:") {
+                    Ok(surface_hint) => surface_hint,
+                    Err(error) => return error_response(id, error),
+                };
+            let selector = optional_string(params, &["selector"]);
+            let (reply, rx) = mpsc::channel();
+            (
+                ControlCommand::BrowserWait {
+                    target,
+                    surface_hint,
+                    selector,
                     reply,
                 },
                 rx,
@@ -1344,6 +1416,53 @@ mod tests {
             response.error.as_ref().map(|error| error.code),
             Some(INVALID_PARAMS_CODE)
         );
+    }
+
+    #[test]
+    fn browser_get_and_wait_routes_accept_surface_refs() {
+        let get_response = dispatch_request(
+            r#"{"id":1,"method":"browser.get.attr","params":{"surface_id":"surface:9:tab","selector":"#name","name":"aria-label"}}"#,
+            &|command| match command {
+                ControlCommand::BrowserGet {
+                    target,
+                    surface_hint,
+                    kind,
+                    selector,
+                    name,
+                    reply,
+                } => {
+                    assert_eq!(target, WorkspaceTarget::Active);
+                    assert_eq!(surface_hint, Some("9:tab".to_string()));
+                    assert_eq!(kind, "attr");
+                    assert_eq!(selector, Some("#name".to_string()));
+                    assert_eq!(name, Some("aria-label".to_string()));
+                    let _ = reply.send(Ok(json!({ "value": "Name" })));
+                }
+                other => panic!("unexpected command: {other:?}"),
+            },
+        );
+        assert_eq!(get_response.error, None);
+        assert_eq!(get_response.result.expect("result")["value"], "Name");
+
+        let wait_response = dispatch_request(
+            r#"{"id":2,"method":"browser.wait","params":{"surface_id":"surface:9:tab","selector":"#ready"}}"#,
+            &|command| match command {
+                ControlCommand::BrowserWait {
+                    target,
+                    surface_hint,
+                    selector,
+                    reply,
+                } => {
+                    assert_eq!(target, WorkspaceTarget::Active);
+                    assert_eq!(surface_hint, Some("9:tab".to_string()));
+                    assert_eq!(selector, Some("#ready".to_string()));
+                    let _ = reply.send(Ok(json!({ "ok": true, "ready": true })));
+                }
+                other => panic!("unexpected command: {other:?}"),
+            },
+        );
+        assert_eq!(wait_response.error, None);
+        assert_eq!(wait_response.result.expect("result")["ready"], true);
     }
 
     #[test]
