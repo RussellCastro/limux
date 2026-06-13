@@ -308,6 +308,58 @@ fn focused_surface_payload(state: &State) -> Option<serde_json::Value> {
     Some(serde_json::Value::Object(payload))
 }
 
+fn browser_control_payload(
+    workspace_id: &str,
+    surface_id: &str,
+    handle: &pane::BrowserControlHandle,
+) -> serde_json::Value {
+    let url = handle
+        .current_uri()
+        .filter(|uri| !uri.trim().is_empty())
+        .unwrap_or_else(|| "about:blank".to_string());
+    let title = handle.title();
+    let mut payload = serde_json::Map::new();
+    payload.insert(
+        "workspace_id".to_string(),
+        serde_json::Value::String(workspace_id.to_string()),
+    );
+    payload.insert(
+        "workspace_ref".to_string(),
+        serde_json::Value::String(workspace_ref(workspace_id)),
+    );
+    payload.insert(
+        "surface_id".to_string(),
+        serde_json::Value::String(surface_id.to_string()),
+    );
+    payload.insert(
+        "surface_ref".to_string(),
+        serde_json::Value::String(surface_ref(surface_id)),
+    );
+    if let Some((pane_id, _tab_id)) = surface_id.split_once(':') {
+        payload.insert(
+            "pane_id".to_string(),
+            serde_json::Value::String(pane_id.to_string()),
+        );
+        if let Ok(pane_id) = pane_id.parse::<u32>() {
+            payload.insert(
+                "pane_ref".to_string(),
+                serde_json::Value::String(pane_ref(pane_id)),
+            );
+        }
+    }
+    payload.insert("url".to_string(), serde_json::Value::String(url.clone()));
+    payload.insert("title".to_string(), serde_json::Value::String(title.clone()));
+    payload.insert(
+        "browser".to_string(),
+        serde_json::json!({
+            "open": true,
+            "url": url,
+            "title": title,
+        }),
+    );
+    serde_json::Value::Object(payload)
+}
+
 fn focused_ids_for_workspace(state: &State, workspace_id: &str) -> (Option<u32>, Option<String>) {
     let is_active = {
         let app_state = state.borrow();
@@ -4083,6 +4135,214 @@ fn handle_control_command(state: &State, command: ControlCommand) {
             }
 
             let _ = reply.send(Ok(response));
+        }
+        ControlCommand::BrowserOpenSplit {
+            target,
+            source_surface_id,
+            url,
+            reply,
+        } => {
+            let resolved = match resolve_pane_create_target(
+                state,
+                &target,
+                source_surface_id.as_deref(),
+                None,
+                PaneCreateDirection::Right,
+            ) {
+                Ok(resolved) => resolved,
+                Err(error) => {
+                    let _ = reply.send(Err(pane_create_target_error(error)));
+                    return;
+                }
+            };
+
+            let inherited_url = if url.is_none() {
+                let app_state = state.borrow();
+                app_state
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.id == resolved.workspace_id)
+                    .and_then(|workspace| {
+                        source_surface_id.as_deref().and_then(|surface_id| {
+                            pane::browser_handle_for_root(&workspace.root, Some(surface_id))
+                                .and_then(|(_surface_id, handle)| handle.current_uri())
+                        })
+                    })
+            } else {
+                None
+            };
+            let target_url = url
+                .or(inherited_url)
+                .unwrap_or_else(|| "about:blank".to_string());
+            let initial_state = PaneState::browser_only(Some(&target_url));
+
+            let new_pane = split_pane(
+                state,
+                &resolved.workspace_id,
+                &resolved.pane_widget,
+                gtk::Orientation::Horizontal,
+                SplitPaneOptions {
+                    initial_state: Some(initial_state),
+                    skip_default_tab: false,
+                    new_pane_first: false,
+                    persist: true,
+                },
+            );
+            let Some(new_pane) = new_pane else {
+                let _ = reply.send(Err(BridgeError::invalid_params(
+                    "not enough room to split pane",
+                )));
+                return;
+            };
+
+            let Some(surface) = pane::active_surface_summary(&new_pane) else {
+                let _ = reply.send(Err(BridgeError::internal(
+                    "browser.open_split did not produce a browser surface",
+                )));
+                return;
+            };
+            if surface.kind != "browser" {
+                let _ = reply.send(Err(BridgeError::internal(
+                    "browser.open_split produced a non-browser surface",
+                )));
+                return;
+            }
+
+            let Some((surface_id, handle)) =
+                pane::browser_handle_for_surface(&new_pane, Some(&surface.surface_id))
+            else {
+                let _ = reply.send(Err(BridgeError::internal(
+                    "browser.open_split produced an unreachable browser surface",
+                )));
+                return;
+            };
+
+            let mut payload = browser_control_payload(&resolved.workspace_id, &surface_id, &handle);
+            if let Some(map) = payload.as_object_mut() {
+                map.insert(
+                    "target_pane_id".to_string(),
+                    serde_json::Value::String(surface.pane_id.to_string()),
+                );
+                map.insert("created_split".to_string(), serde_json::Value::Bool(true));
+                map.insert("ok".to_string(), serde_json::Value::Bool(true));
+            }
+            let _ = reply.send(Ok(payload));
+        }
+        ControlCommand::BrowserNavigate {
+            target,
+            surface_hint,
+            url,
+            reply,
+        } => {
+            let resolved = {
+                let app_state = state.borrow();
+                workspace_index_for_target(&app_state, &target)
+            };
+
+            let Some(index) = resolved else {
+                let _ = reply.send(Err(crate::control_bridge::BridgeError::not_found(
+                    "workspace not found",
+                )));
+                return;
+            };
+
+            let target = {
+                let app_state = state.borrow();
+                let workspace = &app_state.workspaces[index];
+                pane::browser_handle_for_root(&workspace.root, surface_hint.as_deref()).map(
+                    |(surface_id, handle)| (workspace.id.clone(), surface_id, handle),
+                )
+            };
+
+            let Some((workspace_id, surface_id, handle)) = target else {
+                let _ = reply.send(Err(crate::control_bridge::BridgeError::not_found(
+                    "browser surface not found",
+                )));
+                return;
+            };
+
+            if !handle.navigate(&url) {
+                let _ = reply.send(Err(crate::control_bridge::BridgeError::internal(
+                    "browser.navigate failed",
+                )));
+                return;
+            }
+
+            let mut payload = browser_control_payload(&workspace_id, &surface_id, &handle);
+            if let Some(map) = payload.as_object_mut() {
+                map.insert("ok".to_string(), serde_json::Value::Bool(true));
+            }
+            let _ = reply.send(Ok(payload));
+        }
+        ControlCommand::BrowserUrlGet {
+            target,
+            surface_hint,
+            reply,
+        } => {
+            let resolved = {
+                let app_state = state.borrow();
+                workspace_index_for_target(&app_state, &target)
+            };
+
+            let Some(index) = resolved else {
+                let _ = reply.send(Err(crate::control_bridge::BridgeError::not_found(
+                    "workspace not found",
+                )));
+                return;
+            };
+
+            let target = {
+                let app_state = state.borrow();
+                let workspace = &app_state.workspaces[index];
+                pane::browser_handle_for_root(&workspace.root, surface_hint.as_deref()).map(
+                    |(surface_id, handle)| (workspace.id.clone(), surface_id, handle),
+                )
+            };
+
+            let Some((workspace_id, surface_id, handle)) = target else {
+                let _ = reply.send(Err(crate::control_bridge::BridgeError::not_found(
+                    "browser surface not found",
+                )));
+                return;
+            };
+
+            let payload = browser_control_payload(&workspace_id, &surface_id, &handle);
+            let _ = reply.send(Ok(payload));
+        }
+        ControlCommand::BrowserTitleGet {
+            target,
+            surface_hint,
+            reply,
+        } => {
+            let resolved = {
+                let app_state = state.borrow();
+                workspace_index_for_target(&app_state, &target)
+            };
+
+            let Some(index) = resolved else {
+                let _ = reply.send(Err(crate::control_bridge::BridgeError::not_found(
+                    "workspace not found",
+                )));
+                return;
+            };
+
+            let target = {
+                let app_state = state.borrow();
+                let workspace = &app_state.workspaces[index];
+                pane::browser_handle_for_root(&workspace.root, surface_hint.as_deref()).map(
+                    |(surface_id, handle)| (workspace.id.clone(), surface_id, handle),
+                )
+            };
+
+            let Some((workspace_id, surface_id, handle)) = target else {
+                let _ = reply.send(Err(crate::control_bridge::BridgeError::not_found(
+                    "browser surface not found",
+                )));
+                return;
+            };
+
+            let payload = browser_control_payload(&workspace_id, &surface_id, &handle);
+            let _ = reply.send(Ok(payload));
         }
         ControlCommand::ListSurfaces { target, reply } => {
             let resolved = {

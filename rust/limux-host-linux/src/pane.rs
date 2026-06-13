@@ -277,6 +277,13 @@ pub struct BrowserShortcutTarget {
 }
 
 #[derive(Clone)]
+pub(crate) struct BrowserControlHandle {
+    uri: Rc<RefCell<Option<String>>>,
+    title_label: gtk::Label,
+    handles: BrowserHandles,
+}
+
+#[derive(Clone)]
 pub enum FocusedShortcutTarget {
     None,
     Terminal(TerminalShortcutTarget),
@@ -1774,6 +1781,85 @@ pub fn active_surface_summary(pane_widget: &gtk::Widget) -> Option<SurfaceSummar
     })
 }
 
+pub(crate) fn browser_handle_for_surface(
+    pane_widget: &gtk::Widget,
+    surface_hint: Option<&str>,
+) -> Option<(String, BrowserControlHandle)> {
+    let internals = find_pane_internals(pane_widget)?;
+    let pane_id = internals.pane_id;
+    let tab_state = internals.tab_state.borrow();
+    let requested = surface_hint
+        .map(normalize_surface_hint)
+        .filter(|value| !value.is_empty());
+    let active_tab = tab_state.active_tab.as_deref();
+    let mut fallback = None;
+
+    for entry in &tab_state.tabs {
+        let TabKind::Browser { state } = &entry.kind else {
+            continue;
+        };
+
+        let full_surface_id = composite_surface_id(pane_id, &entry.id);
+        let handle = BrowserControlHandle {
+            uri: state.uri.clone(),
+            title_label: entry.title_label.clone(),
+            handles: state.handles.clone(),
+        };
+
+        if requested.is_some_and(|value| value == entry.id || value == full_surface_id) {
+            return Some((full_surface_id, handle));
+        }
+
+        if requested.is_some() {
+            continue;
+        }
+
+        if active_tab == Some(entry.id.as_str()) {
+            return Some((full_surface_id, handle));
+        }
+
+        if fallback.is_none() {
+            fallback = Some((full_surface_id, handle));
+        }
+    }
+
+    fallback
+}
+
+pub(crate) fn browser_handle_for_root(
+    root: &gtk::Widget,
+    surface_hint: Option<&str>,
+) -> Option<(String, BrowserControlHandle)> {
+    let requested = surface_hint
+        .map(normalize_surface_hint)
+        .filter(|value| !value.is_empty());
+
+    if let Some(requested) = requested {
+        for internals in pane_internals_for_root(root) {
+            let pane_widget: gtk::Widget = internals.pane_outer.clone().upcast();
+            if let Some((surface_id, handle)) =
+                browser_handle_for_surface(&pane_widget, Some(requested))
+            {
+                if surface_id == requested
+                    || surface_id
+                        .strip_prefix("surface:")
+                        .is_some_and(|value| value == requested)
+                {
+                    return Some((surface_id, handle));
+                }
+            }
+        }
+        return None;
+    }
+
+    pane_internals_for_root(root)
+        .into_iter()
+        .find_map(|internals| {
+            let pane_widget: gtk::Widget = internals.pane_outer.clone().upcast();
+            browser_handle_for_surface(&pane_widget, None)
+        })
+}
+
 pub fn terminal_handle_for_root(
     root: &gtk::Widget,
     surface_hint: Option<&str>,
@@ -2789,7 +2875,9 @@ struct BrowserHandles;
 
 impl BrowserShortcutTarget {
     pub fn current_uri(&self) -> Option<String> {
-        self.uri.borrow().clone()
+        self.handles
+            .current_uri()
+            .or_else(|| self.uri.borrow().clone())
     }
 
     pub fn focus_location(&self) -> bool {
@@ -2845,6 +2933,33 @@ impl BrowserShortcutTarget {
     }
 }
 
+impl BrowserControlHandle {
+    pub(crate) fn current_uri(&self) -> Option<String> {
+        self.handles
+            .current_uri()
+            .or_else(|| self.uri.borrow().clone())
+    }
+
+    pub(crate) fn title(&self) -> String {
+        self.handles
+            .title()
+            .filter(|title| !title.trim().is_empty())
+            .unwrap_or_else(|| {
+                let title = self.title_label.label().to_string();
+                if title.trim().is_empty() {
+                    "Browser".to_string()
+                } else {
+                    title
+                }
+            })
+    }
+
+    pub(crate) fn navigate(&self, url: &str) -> bool {
+        *self.uri.borrow_mut() = Some(url.to_string());
+        self.handles.navigate(url)
+    }
+}
+
 #[cfg(feature = "webkit")]
 impl BrowserHandles {
     fn is_find_active(&self) -> bool {
@@ -2863,6 +2978,26 @@ impl BrowserHandles {
 
     fn is_page_editable(&self) -> bool {
         self.dom_editable.get()
+    }
+
+    fn current_uri(&self) -> Option<String> {
+        self.webview
+            .uri()
+            .map(|uri| uri.to_string())
+            .or_else(|| {
+                let text = self.url_entry.text().to_string();
+                (!text.trim().is_empty()).then_some(text)
+            })
+    }
+
+    fn title(&self) -> Option<String> {
+        self.webview.title().map(|title| title.to_string())
+    }
+
+    fn navigate(&self, url: &str) -> bool {
+        self.url_entry.set_text(url);
+        self.webview.load_uri(url);
+        true
     }
 
     fn focus_location(&self) -> bool {
@@ -2994,6 +3129,18 @@ impl BrowserHandles {
     }
 
     fn is_page_editable(&self) -> bool {
+        false
+    }
+
+    fn current_uri(&self) -> Option<String> {
+        None
+    }
+
+    fn title(&self) -> Option<String> {
+        None
+    }
+
+    fn navigate(&self, _url: &str) -> bool {
         false
     }
 

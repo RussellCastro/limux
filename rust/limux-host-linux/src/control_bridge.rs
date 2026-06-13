@@ -33,6 +33,10 @@ const METHODS: &[&str] = &[
     "surface.read_text",
     "surface.send_text",
     "surface.send_key",
+    "browser.open_split",
+    "browser.navigate",
+    "browser.url.get",
+    "browser.get.title",
     "notification.create",
 ];
 
@@ -83,9 +87,10 @@ pub enum PaneCreateType {
 ///   newly-created surface after creation. The standalone core dispatcher may
 ///   accept the field for compatibility but does not launch a process.
 ///
-/// This delivery only implements live-GTK terminal panes. Browser pane support
-/// remains a follow-up, so `type=browser` and `url` fail at parse time before
-/// any GTK work is scheduled. Responses must keep the existing core/CLI field
+/// `pane.create` intentionally implements live-GTK terminal panes only. Browser
+/// split creation is exposed through `browser.open_split`, so `type=browser` and
+/// `url` on `pane.create` fail at parse time before any GTK work is scheduled.
+/// Responses must keep the existing core/CLI field
 /// names: `pane_id`, `pane_ref`, `surface_id`, and `surface_ref`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CreatePaneRequest {
@@ -120,6 +125,28 @@ pub enum ControlCommand {
     },
     CreatePane {
         request: CreatePaneRequest,
+        reply: mpsc::Sender<BridgeResult>,
+    },
+    BrowserOpenSplit {
+        target: WorkspaceTarget,
+        source_surface_id: Option<String>,
+        url: Option<String>,
+        reply: mpsc::Sender<BridgeResult>,
+    },
+    BrowserNavigate {
+        target: WorkspaceTarget,
+        surface_hint: Option<String>,
+        url: String,
+        reply: mpsc::Sender<BridgeResult>,
+    },
+    BrowserUrlGet {
+        target: WorkspaceTarget,
+        surface_hint: Option<String>,
+        reply: mpsc::Sender<BridgeResult>,
+    },
+    BrowserTitleGet {
+        target: WorkspaceTarget,
+        surface_hint: Option<String>,
         reply: mpsc::Sender<BridgeResult>,
     },
     ListSurfaces {
@@ -188,6 +215,10 @@ impl ControlCommand {
             | Self::ListPanes { reply, .. }
             | Self::ListPaneSurfaces { reply, .. }
             | Self::CreatePane { reply, .. }
+            | Self::BrowserOpenSplit { reply, .. }
+            | Self::BrowserNavigate { reply, .. }
+            | Self::BrowserUrlGet { reply, .. }
+            | Self::BrowserTitleGet { reply, .. }
             | Self::ListSurfaces { reply, .. }
             | Self::SurfaceHealth { reply, .. }
             | Self::ReadSurfaceText { reply, .. }
@@ -499,6 +530,94 @@ fn handle_method(
             };
             let (reply, rx) = mpsc::channel();
             (ControlCommand::CreatePane { request, reply }, rx)
+        }
+        "browser.open_split" => {
+            let target = match parse_optional_workspace_target(params, true) {
+                Ok(target) => target,
+                Err(error) => return error_response(id, error),
+            };
+            let source_surface_id =
+                match optional_ref_handle(params, &["surface_id", "id"], "surface:") {
+                    Ok(surface_hint) => surface_hint,
+                    Err(error) => return error_response(id, error),
+                };
+            let (reply, rx) = mpsc::channel();
+            (
+                ControlCommand::BrowserOpenSplit {
+                    target,
+                    source_surface_id,
+                    url: optional_string(params, &["url"]),
+                    reply,
+                },
+                rx,
+            )
+        }
+        "browser.navigate" => {
+            let Some(url) = optional_string(params, &["url"]) else {
+                return error_response(
+                    id,
+                    BridgeError::invalid_params("browser.navigate requires url"),
+                );
+            };
+            let target = match parse_optional_workspace_target(params, true) {
+                Ok(target) => target,
+                Err(error) => return error_response(id, error),
+            };
+            let surface_hint =
+                match optional_ref_handle(params, &["surface_id", "id"], "surface:") {
+                    Ok(surface_hint) => surface_hint,
+                    Err(error) => return error_response(id, error),
+                };
+            let (reply, rx) = mpsc::channel();
+            (
+                ControlCommand::BrowserNavigate {
+                    target,
+                    surface_hint,
+                    url,
+                    reply,
+                },
+                rx,
+            )
+        }
+        "browser.url.get" => {
+            let target = match parse_optional_workspace_target(params, true) {
+                Ok(target) => target,
+                Err(error) => return error_response(id, error),
+            };
+            let surface_hint =
+                match optional_ref_handle(params, &["surface_id", "id"], "surface:") {
+                    Ok(surface_hint) => surface_hint,
+                    Err(error) => return error_response(id, error),
+                };
+            let (reply, rx) = mpsc::channel();
+            (
+                ControlCommand::BrowserUrlGet {
+                    target,
+                    surface_hint,
+                    reply,
+                },
+                rx,
+            )
+        }
+        "browser.get.title" => {
+            let target = match parse_optional_workspace_target(params, true) {
+                Ok(target) => target,
+                Err(error) => return error_response(id, error),
+            };
+            let surface_hint =
+                match optional_ref_handle(params, &["surface_id", "id"], "surface:") {
+                    Ok(surface_hint) => surface_hint,
+                    Err(error) => return error_response(id, error),
+                };
+            let (reply, rx) = mpsc::channel();
+            (
+                ControlCommand::BrowserTitleGet {
+                    target,
+                    surface_hint,
+                    reply,
+                },
+                rx,
+            )
         }
         "surface.list" | "list-panels" => {
             let target = match parse_optional_workspace_target(params, true) {
@@ -972,6 +1091,83 @@ mod tests {
             response.error.as_ref().map(|error| error.code),
             Some(INVALID_PARAMS_CODE)
         );
+    }
+
+    #[test]
+    fn browser_routes_queue_live_bridge_commands() {
+        let open_response = dispatch_request(
+            r#"{"id":1,"method":"browser.open_split","params":{"workspace_id":"codex","surface_id":"surface:4:tab","url":"https://example.com"}}"#,
+            &|command| match command {
+                ControlCommand::BrowserOpenSplit {
+                    target,
+                    source_surface_id,
+                    url,
+                    reply,
+                } => {
+                    assert_eq!(target, WorkspaceTarget::Name("codex".to_string()));
+                    assert_eq!(source_surface_id, Some("4:tab".to_string()));
+                    assert_eq!(url, Some("https://example.com".to_string()));
+                    let _ = reply.send(Ok(json!({ "ok": true })));
+                }
+                other => panic!("unexpected command: {other:?}"),
+            },
+        );
+        assert_eq!(open_response.error, None);
+
+        let navigate_response = dispatch_request(
+            r#"{"id":2,"method":"browser.navigate","params":{"surface_id":"surface:9:tab","url":"https://cmux.dev"}}"#,
+            &|command| match command {
+                ControlCommand::BrowserNavigate {
+                    target,
+                    surface_hint,
+                    url,
+                    reply,
+                } => {
+                    assert_eq!(target, WorkspaceTarget::Active);
+                    assert_eq!(surface_hint, Some("9:tab".to_string()));
+                    assert_eq!(url, "https://cmux.dev");
+                    let _ = reply.send(Ok(json!({ "ok": true })));
+                }
+                other => panic!("unexpected command: {other:?}"),
+            },
+        );
+        assert_eq!(navigate_response.error, None);
+    }
+
+    #[test]
+    fn browser_navigate_requires_url_before_dispatch() {
+        let response = dispatch_request(
+            r#"{"id":1,"method":"browser.navigate","params":{"surface_id":"surface:9:tab"}}"#,
+            &|command| panic!("invalid browser.navigate should not dispatch: {command:?}"),
+        );
+
+        assert_eq!(response.result, None);
+        assert_eq!(
+            response.error.as_ref().map(|error| error.code),
+            Some(INVALID_PARAMS_CODE)
+        );
+    }
+
+    #[test]
+    fn browser_get_routes_accept_surface_refs() {
+        let response = dispatch_request(
+            r#"{"id":1,"method":"browser.url.get","params":{"surface_id":"surface:9:tab"}}"#,
+            &|command| match command {
+                ControlCommand::BrowserUrlGet {
+                    target,
+                    surface_hint,
+                    reply,
+                } => {
+                    assert_eq!(target, WorkspaceTarget::Active);
+                    assert_eq!(surface_hint, Some("9:tab".to_string()));
+                    let _ = reply.send(Ok(json!({ "url": "https://example.com" })));
+                }
+                other => panic!("unexpected command: {other:?}"),
+            },
+        );
+
+        assert_eq!(response.error, None);
+        assert_eq!(response.result.expect("result")["url"], "https://example.com");
     }
 
     #[test]
