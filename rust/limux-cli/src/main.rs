@@ -199,7 +199,7 @@ fn parse_global_args() -> Result<GlobalOptions> {
 
 fn print_help() {
     println!(
-        "limux CLI\n\nUsage: limux [--socket <path>] [--json] [--id-format refs|both|uuids] <command> [args...]\n       limux\n\nRunning `limux` with no arguments launches the GTK app.\n\nCommon commands:\n  identify [--workspace <id|ref>] [--surface <id|ref>]\n  list-panels [--workspace <id|ref>]\n  list-panes [--workspace <id|ref>]\n  list-workspaces\n  surface-health [--workspace <id|ref>]\n  send [--workspace <id|ref>] [--surface <id|ref>] <text>\n  send-key [--workspace <id|ref>] [--surface <id|ref>] <key>\n  new-workspace [--cwd <path>] [--command <text>]\n  close-workspace --workspace <id|ref>\n  sidebar-state --workspace <id|ref>\n  new-surface [--workspace <id|ref>]\n  new-pane [--workspace <id|ref>] [--pane <id|ref>] [--surface <id|ref>] [--direction <left|right|up|down>] [--type <terminal|browser>] [--command <text>] [--url <url>]\n      Live GTK self-spawn currently supports terminal panes only; browser panes remain deferred.\n  rename-workspace [--workspace <id|ref>] <title>\n  rename-window [--workspace <id|ref>] <title>\n  rename-tab [--workspace <id|ref>] [--tab <id|ref>] <title>\n  read-screen [--workspace <id|ref>] [--surface <id|ref>] [--scrollback] [--lines <n>]\n  capture-pane (alias of read-screen)\n  tab-action --action <name> [--workspace <id|ref>] [--tab <id|ref>] [--title <text>] [--url <url>]\n  browser [--surface <id|ref>|<surface>] <subcommand> ...\n  list-notifications [--unread]\n  clear-notifications [--id <notification-id>]\n  jump-notification [--id <notification-id>]\n\nAgent integrations:\n  notify [--workspace <id|ref>] [--subtitle <text>] [--body <text>] <title>\n  hooks setup [agent] | hooks uninstall [agent] | hooks <agent> <event>\n  claude-hook | opencode-hook | gemini-hook --event <name> [--subtitle <text>] [--body <text>] [--title <text>]\n  agent-team [--agents codex,claude[,opencode,gemini]] [--cwd <path>] [--no-launch] [--dry-run]\n      Splits the active workspace into one pane per agent (caller's pane stays\n      as the orchestrator on the left, peers stack down the right), launches\n      each CLI in its pane, and writes AGENTS.md describing the <agent-msg>\n      XML protocol so peers can talk via\n      `limux send --surface <peer-surface-id> <envelope>`.\n"
+        "limux CLI\n\nUsage: limux [--socket <path>] [--json] [--id-format refs|both|uuids] <command> [args...]\n       limux\n\nRunning `limux` with no arguments launches the GTK app.\n\nCommon commands:\n  identify [--workspace <id|ref>] [--surface <id|ref>]\n  list-panels [--workspace <id|ref>]\n  list-panes [--workspace <id|ref>]\n  list-workspaces\n  surface-health [--workspace <id|ref>]\n  send [--workspace <id|ref>] [--surface <id|ref>] <text>\n  send-key [--workspace <id|ref>] [--surface <id|ref>] <key>\n  new-workspace [--cwd <path>] [--command <text>]\n  ssh [--cwd <path>] [--name <workspace-name>] [--] <ssh-args...>\n  close-workspace --workspace <id|ref>\n  sidebar-state --workspace <id|ref>\n  new-surface [--workspace <id|ref>]\n  new-pane [--workspace <id|ref>] [--pane <id|ref>] [--surface <id|ref>] [--direction <left|right|up|down>] [--type <terminal|browser>] [--command <text>] [--url <url>]\n      Live GTK self-spawn currently supports terminal panes only; browser panes remain deferred.\n  rename-workspace [--workspace <id|ref>] <title>\n  rename-window [--workspace <id|ref>] <title>\n  rename-tab [--workspace <id|ref>] [--tab <id|ref>] <title>\n  read-screen [--workspace <id|ref>] [--surface <id|ref>] [--scrollback] [--lines <n>]\n  capture-pane (alias of read-screen)\n  tab-action --action <name> [--workspace <id|ref>] [--tab <id|ref>] [--title <text>] [--url <url>]\n  browser [--surface <id|ref>|<surface>] <subcommand> ...\n  list-notifications [--unread]\n  clear-notifications [--id <notification-id>]\n  jump-notification [--id <notification-id>]\n\nAgent integrations:\n  notify [--workspace <id|ref>] [--subtitle <text>] [--body <text>] <title>\n  hooks setup [agent] | hooks uninstall [agent] | hooks <agent> <event>\n  claude-hook | opencode-hook | gemini-hook --event <name> [--subtitle <text>] [--body <text>] [--title <text>]\n  agent-team [--agents codex,claude[,opencode,gemini]] [--cwd <path>] [--no-launch] [--dry-run]\n      Splits the active workspace into one pane per agent (caller's pane stays\n      as the orchestrator on the left, peers stack down the right), launches\n      each CLI in its pane, and writes AGENTS.md describing the <agent-msg>\n      XML protocol so peers can talk via\n      `limux send --surface <peer-surface-id> <envelope>`.\n"
     );
 }
 
@@ -1988,6 +1988,129 @@ async fn run_new_workspace(client: &mut Client, args: &[String]) -> Result<Value
     Ok(created)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SshWorkspaceRequest {
+    name: String,
+    cwd: Option<String>,
+    command: String,
+    target: String,
+}
+
+fn ssh_option_takes_value(arg: &str) -> bool {
+    matches!(
+        arg,
+        "-b" | "-c"
+            | "-D"
+            | "-E"
+            | "-e"
+            | "-F"
+            | "-I"
+            | "-i"
+            | "-J"
+            | "-L"
+            | "-l"
+            | "-m"
+            | "-O"
+            | "-o"
+            | "-p"
+            | "-Q"
+            | "-R"
+            | "-S"
+            | "-W"
+            | "-w"
+    )
+}
+
+fn ssh_command_args(args: &[String]) -> Vec<String> {
+    let mut ssh_args = Vec::new();
+    let mut index = 0usize;
+    while index < args.len() {
+        let arg = &args[index];
+        if arg == "--cwd" || arg == "--name" {
+            index += 2;
+            continue;
+        }
+        if arg == "--" {
+            ssh_args.extend(args[index + 1..].iter().cloned());
+            break;
+        }
+        ssh_args.push(arg.clone());
+        index += 1;
+    }
+    ssh_args
+}
+
+fn ssh_workspace_target(ssh_args: &[String]) -> Option<String> {
+    let mut index = 0usize;
+    while index < ssh_args.len() {
+        let arg = &ssh_args[index];
+        if arg == "--" {
+            return ssh_args.get(index + 1).cloned();
+        }
+        if arg.starts_with('-') && arg != "-" {
+            if ssh_option_takes_value(arg.as_str()) {
+                index += 2;
+            } else {
+                index += 1;
+            }
+            continue;
+        }
+        return Some(arg.clone());
+    }
+    None
+}
+
+fn ssh_workspace_command(ssh_args: &[String]) -> String {
+    let args = ssh_args
+        .iter()
+        .map(|arg| shell_single_quote(arg))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("ssh {args}")
+}
+
+fn build_ssh_workspace_request(args: &[String]) -> Result<SshWorkspaceRequest> {
+    let cwd = parse_opt(args, "--cwd");
+    let explicit_name = parse_opt(args, "--name").filter(|value| !value.trim().is_empty());
+    let ssh_args = ssh_command_args(args);
+    if ssh_args.is_empty() {
+        bail!("ssh requires a remote target");
+    }
+    let target = ssh_workspace_target(&ssh_args)
+        .ok_or_else(|| anyhow!("ssh requires a remote target"))?;
+    let name = explicit_name.unwrap_or_else(|| format!("ssh:{target}"));
+    Ok(SshWorkspaceRequest {
+        name,
+        cwd,
+        command: ssh_workspace_command(&ssh_args),
+        target,
+    })
+}
+
+async fn run_ssh_workspace(client: &mut Client, args: &[String]) -> Result<Value> {
+    let request = build_ssh_workspace_request(args)?;
+    let SshWorkspaceRequest {
+        name,
+        cwd,
+        command,
+        target,
+    } = request;
+    let mut params = Map::new();
+    params.insert("name".to_string(), Value::String(name));
+    params.insert("command".to_string(), Value::String(command));
+    if let Some(cwd) = cwd {
+        params.insert("cwd".to_string(), Value::String(cwd));
+    }
+    let mut created = client
+        .call("workspace.create", Value::Object(params))
+        .await
+        .context("ssh workspace.create failed")?;
+    if let Some(map) = created.as_object_mut() {
+        map.insert("ssh_target".to_string(), Value::String(target));
+    }
+    Ok(created)
+}
+
 // ---------------------------------------------------------------------------
 // `limux agent-team` — spin up a multi-agent collaboration workspace.
 // ---------------------------------------------------------------------------
@@ -3694,6 +3817,15 @@ async fn execute_command(client: &mut Client, opts: &GlobalOptions) -> Result<Co
                 CommandOutput::Text(format!("OK {}", handle))
             }
         }
+        "ssh" => {
+            let payload = run_ssh_workspace(client, args).await?;
+            if opts.json_output {
+                CommandOutput::Json(payload)
+            } else {
+                let handle = handle_from_payload(&payload, "workspace_id", "workspace_ref");
+                CommandOutput::Text(format!("OK {}", handle))
+            }
+        }
         "close-workspace" => {
             let payload = run_close_workspace(client, args).await?;
             if opts.json_output {
@@ -3960,6 +4092,40 @@ mod cli_arg_tests {
         let dev = Path::new("/repo/target/debug/limux-cli");
         let candidates = host_binary_candidates(dev);
         assert!(candidates.contains(&PathBuf::from("/repo/target/debug/limux")));
+    }
+
+    #[test]
+    fn ssh_workspace_request_builds_quoted_create_command() {
+        let request = build_ssh_workspace_request(&args(&[
+            "--cwd",
+            "/repo",
+            "-p",
+            "2222",
+            "dev@example.com",
+        ]))
+        .expect("ssh request");
+        assert_eq!(request.name, "ssh:dev@example.com");
+        assert_eq!(request.cwd.as_deref(), Some("/repo"));
+        assert_eq!(request.target, "dev@example.com");
+        assert_eq!(request.command, "ssh '-p' '2222' 'dev@example.com'");
+
+        let named = build_ssh_workspace_request(&args(&[
+            "--name",
+            "prod",
+            "--",
+            "admin@prod.internal",
+            "tmux attach",
+        ]))
+        .expect("named ssh request");
+        assert_eq!(named.name, "prod");
+        assert_eq!(named.target, "admin@prod.internal");
+        assert_eq!(named.command, "ssh 'admin@prod.internal' 'tmux attach'");
+    }
+
+    #[test]
+    fn ssh_workspace_request_rejects_missing_remote() {
+        assert!(build_ssh_workspace_request(&args(&["--cwd", "/repo"])).is_err());
+        assert!(build_ssh_workspace_request(&args(&["-p", "2222"])).is_err());
     }
 
     #[test]

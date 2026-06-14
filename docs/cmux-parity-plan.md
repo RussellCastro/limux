@@ -107,7 +107,14 @@ into a `notify` (and, where useful, an inline `send`). Drop-in for
     - the `LIMUX_*` env contract every spawned terminal inherits,
     - editable Policies section (timeouts, size limits, destructive-action gating).
 
-### Phase 6 — (deferred) `limux progress`, `limux log`, `limux markdown`
+### Phase 6 — `limux ssh` remote workspace slice 🚧 PARTIAL
+`limux ssh [--cwd <path>] [--name <workspace>] [--] <ssh-args...>` creates a
+new workspace through the live `workspace.create` bridge and launches OpenSSH in
+its first terminal. This matches the first-order cmux behavior of quickly opening
+a remote terminal workspace. Remote browser network routing and image drag/upload
+through `scp` remain open.
+
+### Phase 7 — (deferred) `limux progress`, `limux log`, `limux markdown`
 Nice polish, not blockers.
 
 ## Why phase 2 first

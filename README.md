@@ -112,6 +112,21 @@ Repository maintainability rules live in [`docs/maintainability.md`](docs/mainta
 cmux compatibility is tracked in [`docs/cmux-parity-contract.md`](docs/cmux-parity-contract.md).
 This fork policy is documented in [`FORK.md`](FORK.md).
 
+## Remote workspaces
+
+`limux ssh` opens a new workspace and launches OpenSSH in its first terminal.
+The command accepts normal SSH arguments after Limux-local `--cwd` and `--name`
+flags:
+
+```bash
+limux ssh dev@example.com
+limux ssh --name prod --cwd "$PWD" -p 2222 admin@prod.internal
+limux ssh -- bastion.example.com 'tmux attach'
+```
+
+This is the first SSH-workspace parity slice. Remote browser networking and
+image drag/upload through `scp` are still tracked in the cmux parity contract.
+
 ## Agent integrations
 
 Limux ships first-class hooks for coding agents (Codex, Claude Code, and
