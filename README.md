@@ -159,6 +159,14 @@ import remain tracked in the cmux parity contract.
 See [`docs/browser-import.md`](docs/browser-import.md) for supported formats and
 current limitations.
 
+## Ghostty config compatibility
+
+Limux initializes embedded Ghostty with Ghostty's default and recursive config
+loaders, then mirrors the small set of Ghostty settings that affect GTK host
+chrome such as terminal font default, background opacity, and scrollbar
+visibility. See [`docs/ghostty-compatibility.md`](docs/ghostty-compatibility.md)
+for the support matrix and boundaries.
+
 ## Agent integrations
 
 Limux ships first-class hooks for coding agents (Codex, Claude Code, and
