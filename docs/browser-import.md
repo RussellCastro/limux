@@ -1,8 +1,11 @@
 # Browser import
 
 `limux browser import-cookies` imports cookie files into the currently selected
-WebKit browser surface. It is a first cmux-parity slice for cookie-file import,
-not a full Chrome, Firefox, or Arc profile importer.
+WebKit browser surface. Current hosts use WebKitGTK's `CookieManager`, so
+`httpOnly`, domain, path, secure, and expiration/max-age attributes are
+preserved for imported rows when the export includes them.
+It is still a cookie-file import slice, not a full Chrome, Firefox, or Arc
+profile importer.
 
 ## Usage
 
@@ -16,8 +19,10 @@ extensions default to Netscape `cookies.txt` format. Use `--format json` or
 `--format netscape` to force a parser.
 
 The command returns JSON with `imported_count`, `skipped_count`, `imported`, and
-`skipped` rows. `httpOnly` cookies are reported as skipped because the current
-bridge sets cookies through the active page's `document.cookie` path.
+`skipped` rows. When connected to an older host that does not expose
+`browser.cookies.import`, the CLI falls back to the legacy page bridge; that
+fallback can only set page-visible cookies and reports `httpOnly` rows as
+skipped.
 
 ## JSON format
 
@@ -30,6 +35,8 @@ array. Accepted keys are:
 - `path`
 - `secure`
 - `httpOnly` or `http_only`
+- `expirationDate`, `expires`, `expiry`, `expiration`, `expires_unix`,
+  `maxAge`, or `max_age`
 
 Example:
 
@@ -56,15 +63,16 @@ Netscape `cookies.txt` rows use the standard tab-separated columns:
 #HttpOnly_.example.com	TRUE	/	FALSE	0	private	secret
 ```
 
-Rows prefixed with `#HttpOnly_` are parsed, but skipped during import for the
-same page-bridge limitation.
+Rows prefixed with `#HttpOnly_` are parsed and imported through WebKitGTK's
+cookie manager on current hosts. They are skipped only when the CLI is connected
+to an older host that lacks `browser.cookies.import`.
 
 ## Limits
 
-The page bridge can only set cookies for the page currently loaded in the
-WebKit surface. Domain and path values are preserved in the report but are not
-enforced by the current `browser.cookies.set` bridge. Import the file after
-navigating the browser surface to the target origin.
+Rows with no domain use the currently loaded page host. If the active browser
+surface is on `about:blank` or another hostless URI, domainless rows are
+reported as skipped. Import the file after navigating the browser surface to the
+target origin when your export omits domains.
 
-Full browser profile discovery, native WebKitGTK cookie-store import, browser
-history import, and session import remain open cmux-parity work.
+Full browser profile discovery, browser history import, and session import
+remain open cmux-parity work.

@@ -6391,6 +6391,7 @@ fn handle_control_command(state: &State, command: ControlCommand) {
             key,
             value,
             storage_type,
+            cookies,
             reply,
         } => {
             let resolved = {
@@ -6421,7 +6422,7 @@ fn handle_control_command(state: &State, command: ControlCommand) {
             };
 
             let payload = browser_control_payload(&workspace_id, &surface_id, &handle);
-            handle.data(action, name, key, value, storage_type, move |result| match result {
+            let finish = move |result: Result<serde_json::Value, String>| match result {
                 Ok(data_result) => {
                     let mut payload = payload;
                     if let (Some(payload_map), Some(data_map)) =
@@ -6438,7 +6439,12 @@ fn handle_control_command(state: &State, command: ControlCommand) {
                         format!("browser data command failed: {error}"),
                     )));
                 }
-            });
+            };
+            if action == "cookies.import" {
+                handle.import_cookies(cookies.unwrap_or_else(|| serde_json::json!([])), finish);
+            } else {
+                handle.data(action, name, key, value, storage_type, finish);
+            }
         }
         ControlCommand::BrowserFill {
             target,

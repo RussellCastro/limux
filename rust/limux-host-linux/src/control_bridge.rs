@@ -83,6 +83,7 @@ const METHODS: &[&str] = &[
     "browser.cookies.get",
     "browser.cookies.set",
     "browser.cookies.clear",
+    "browser.cookies.import",
     "browser.storage.get",
     "browser.storage.set",
     "browser.storage.clear",
@@ -302,6 +303,7 @@ pub enum ControlCommand {
         key: Option<String>,
         value: Option<String>,
         storage_type: Option<String>,
+        cookies: Option<Value>,
         reply: mpsc::Sender<BridgeResult>,
     },
     BrowserTab {
@@ -1269,6 +1271,7 @@ fn handle_method(
         "browser.cookies.get"
         | "browser.cookies.set"
         | "browser.cookies.clear"
+        | "browser.cookies.import"
         | "browser.storage.get"
         | "browser.storage.set"
         | "browser.storage.clear" => {
@@ -1277,6 +1280,15 @@ fn handle_method(
             let key = optional_string(params, &["key"]);
             let value = optional_raw_string(params, &["value"]);
             let storage_type = optional_string(params, &["type", "storage_type"]);
+            let cookies = params.get("cookies").cloned();
+            if action == "cookies.import"
+                && !matches!(cookies.as_ref(), Some(Value::Array(_)))
+            {
+                return error_response(
+                    id,
+                    BridgeError::invalid_params("browser.cookies.import requires cookies[]"),
+                );
+            }
             if action == "cookies.set" && name.is_none() {
                 return error_response(
                     id,
@@ -1320,6 +1332,7 @@ fn handle_method(
                     key,
                     value,
                     storage_type,
+                    cookies,
                     reply,
                 },
                 rx,
@@ -2404,6 +2417,7 @@ mod tests {
                     key,
                     value,
                     storage_type,
+                    cookies,
                     reply,
                 } => {
                     assert_eq!(target, WorkspaceTarget::Active);
@@ -2413,6 +2427,7 @@ mod tests {
                     assert_eq!(key, None);
                     assert_eq!(value, Some("abc 123".to_string()));
                     assert_eq!(storage_type, None);
+                    assert_eq!(cookies, None);
                     let _ = reply.send(Ok(json!({ "ok": true, "name": name, "value": value })));
                 }
                 other => panic!("unexpected command: {other:?}"),
@@ -2420,6 +2435,30 @@ mod tests {
         );
         assert_eq!(cookie_response.error, None);
         assert_eq!(cookie_response.result.expect("result")["name"], "sid");
+
+        let import_response = dispatch_request(
+            r#"{"id":4,"method":"browser.cookies.import","params":{"surface_id":"surface:9:tab","cookies":[{"name":"sid","value":"abc","domain":".example.com","path":"/","http_only":true}]}}"#,
+            &|command| match command {
+                ControlCommand::BrowserData {
+                    action,
+                    cookies,
+                    reply,
+                    ..
+                } => {
+                    assert_eq!(action, "cookies.import");
+                    let rows = cookies
+                        .as_ref()
+                        .and_then(Value::as_array)
+                        .expect("cookies array");
+                    assert_eq!(rows[0]["name"], "sid");
+                    assert_eq!(rows[0]["http_only"], true);
+                    let _ = reply.send(Ok(json!({ "ok": true, "imported_count": 1 })));
+                }
+                other => panic!("unexpected command: {other:?}"),
+            },
+        );
+        assert_eq!(import_response.error, None);
+        assert_eq!(import_response.result.expect("result")["imported_count"], 1);
 
         let storage_response = dispatch_request(
             r#"{"id":3,"method":"browser.storage.get","params":{"surface_id":"surface:9:tab","type":"session","key":"token"}}"#,

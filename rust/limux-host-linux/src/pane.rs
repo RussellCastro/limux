@@ -4416,6 +4416,125 @@ impl BrowserControlHandle {
         self.handles
             .data(method, name, key, value, storage_type, on_result)
     }
+
+    pub(crate) fn import_cookies(
+        &self,
+        cookies: serde_json::Value,
+        on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
+    ) {
+        self.handles.import_cookies(cookies, on_result)
+    }
+}
+
+#[cfg(feature = "webkit")]
+fn browser_cookie_import_string(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        value
+            .get(*key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+    })
+}
+
+#[cfg(feature = "webkit")]
+fn browser_cookie_import_bool(value: &serde_json::Value, keys: &[&str]) -> bool {
+    keys.iter()
+        .find_map(|key| value.get(*key))
+        .and_then(|value| {
+            value.as_bool().or_else(|| {
+                value.as_str().map(|raw| raw.eq_ignore_ascii_case("true") || raw == "1")
+            })
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(feature = "webkit")]
+fn browser_cookie_import_i64(value: &serde_json::Value, keys: &[&str]) -> Option<i64> {
+    keys.iter().find_map(|key| {
+        let value = value.get(*key)?;
+        value
+            .as_i64()
+            .or_else(|| value.as_u64().and_then(|raw| i64::try_from(raw).ok()))
+            .or_else(|| value.as_f64().map(|raw| raw as i64))
+            .or_else(|| value.as_str().and_then(|raw| raw.parse::<i64>().ok()))
+    })
+}
+
+#[cfg(feature = "webkit")]
+fn browser_cookie_import_max_age(value: &serde_json::Value) -> Result<i32, &'static str> {
+    if let Some(max_age) = browser_cookie_import_i64(value, &["max_age", "maxAge"]) {
+        return if max_age <= 0 {
+            Err("cookie max_age is expired")
+        } else {
+            Ok(max_age.min(i32::MAX as i64) as i32)
+        };
+    }
+    let Some(expires_unix) = browser_cookie_import_i64(value, &[
+        "expires_unix",
+        "expires",
+        "expiry",
+        "expiration",
+        "expirationDate",
+        "expiration_date",
+    ]) else {
+        return Ok(-1);
+    };
+    if expires_unix <= 0 {
+        return Ok(-1);
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0);
+    let remaining = expires_unix.saturating_sub(now);
+    if remaining <= 0 {
+        Err("cookie expiration is in the past")
+    } else {
+        Ok(remaining.min(i32::MAX as i64) as i32)
+    }
+}
+
+#[cfg(feature = "webkit")]
+fn browser_cookie_domain_from_uri(uri: Option<&str>) -> Option<String> {
+    let uri = uri?.trim();
+    let (_, after_scheme) = uri.split_once("://")?;
+    let authority = after_scheme
+        .split(|c| matches!(c, '/' | '?' | '#'))
+        .next()
+        .unwrap_or_default()
+        .split('@')
+        .last()
+        .unwrap_or_default()
+        .trim();
+    let host = if let Some(bracketed) = authority.strip_prefix('[') {
+        bracketed.split(']').next().unwrap_or_default()
+    } else {
+        authority.split(':').next().unwrap_or_default()
+    }
+    .trim();
+    (!host.is_empty()).then(|| host.to_string())
+}
+
+#[cfg(feature = "webkit")]
+fn browser_import_cookie_metadata(
+    name: &str,
+    domain: &str,
+    path: &str,
+    secure: bool,
+    http_only: bool,
+    max_age: i32,
+) -> serde_json::Value {
+    serde_json::json!({
+        "name": name,
+        "domain": domain,
+        "path": path,
+        "secure": secure,
+        "http_only": http_only,
+        "session": max_age < 0,
+        "max_age": (max_age >= 0).then_some(max_age),
+    })
 }
 
 #[cfg(feature = "webkit")]
@@ -4781,6 +4900,127 @@ fn browser_wait_poll(
         );
     }
 
+    fn import_cookies(
+        &self,
+        cookies: serde_json::Value,
+        on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
+    ) {
+        let rows = match cookies.as_array() {
+            Some(rows) => rows.clone(),
+            None => {
+                on_result(Err("browser.cookies.import requires cookies[]".to_string()));
+                return;
+            }
+        };
+        let network_session = match self.webview.network_session() {
+            Some(network_session) => network_session,
+            None => {
+                on_result(Err("browser surface has no WebKit network session".to_string()));
+                return;
+            }
+        };
+        let cookie_manager = match network_session.cookie_manager() {
+            Some(cookie_manager) => cookie_manager,
+            None => {
+                on_result(Err("browser surface has no WebKit cookie manager".to_string()));
+                return;
+            }
+        };
+        let default_domain = browser_cookie_domain_from_uri(self.webview.uri().as_deref());
+        let mut pending = Vec::new();
+        let mut skipped = Vec::new();
+
+        for (index, row) in rows.iter().enumerate() {
+            let name = match browser_cookie_import_string(row, &["name", "key"]) {
+                Some(name) => name,
+                None => {
+                    skipped.push(serde_json::json!({
+                        "index": index,
+                        "reason": "cookie row is missing name",
+                    }));
+                    continue;
+                }
+            };
+            let value = match browser_cookie_import_string(row, &["value"]) {
+                Some(value) => value,
+                None => {
+                    skipped.push(serde_json::json!({
+                        "index": index,
+                        "name": name,
+                        "reason": "cookie row is missing value",
+                    }));
+                    continue;
+                }
+            };
+            let domain = browser_cookie_import_string(row, &["domain", "host"])
+                .or_else(|| default_domain.clone());
+            let Some(domain) = domain else {
+                skipped.push(serde_json::json!({
+                    "index": index,
+                    "name": name,
+                    "reason": "cookie row is missing domain and the active page has no host",
+                }));
+                continue;
+            };
+            let path = browser_cookie_import_string(row, &["path"])
+                .unwrap_or_else(|| "/".to_string());
+            let secure = browser_cookie_import_bool(row, &["secure"]);
+            let http_only = browser_cookie_import_bool(row, &["httpOnly", "http_only"]);
+            let max_age = match browser_cookie_import_max_age(row) {
+                Ok(max_age) => max_age,
+                Err(reason) => {
+                    skipped.push(serde_json::json!({
+                        "index": index,
+                        "name": name,
+                        "domain": domain,
+                        "path": path,
+                        "reason": reason,
+                    }));
+                    continue;
+                }
+            };
+            let mut cookie = soup::Cookie::new(&name, &value, &domain, &path, max_age);
+            cookie.set_secure(secure);
+            cookie.set_http_only(http_only);
+            pending.push((
+                cookie,
+                browser_import_cookie_metadata(&name, &domain, &path, secure, http_only, max_age),
+            ));
+        }
+
+        let on_result: BrowserResultCallback = Rc::new(RefCell::new(Some(Box::new(on_result))));
+        glib::MainContext::default().spawn_local(async move {
+            let mut imported = Vec::new();
+            let mut skipped = skipped;
+            for (cookie, metadata) in pending {
+                match cookie_manager.add_cookie_future(&cookie).await {
+                    Ok(()) => imported.push(metadata),
+                    Err(error) => {
+                        let mut metadata = metadata;
+                        if let Some(map) = metadata.as_object_mut() {
+                            map.insert(
+                                "reason".to_string(),
+                                serde_json::Value::String(error.to_string()),
+                            );
+                        }
+                        skipped.push(metadata);
+                    }
+                }
+            }
+            finish_browser_result(
+                &on_result,
+                Ok(serde_json::json!({
+                    "ok": true,
+                    "imported_count": imported.len(),
+                    "skipped_count": skipped.len(),
+                    "imported": imported,
+                    "skipped": skipped,
+                    "note": "Imported cookies through the WebKit CookieManager; native browser profile/history/session discovery remains tracked separately.",
+                })),
+            );
+        });
+    }
+
     fn data(
         &self,
         method: String,
@@ -5057,6 +5297,14 @@ impl BrowserHandles {
         on_result(Err("browser action commands require WebKit support".to_string()));
     }
 
+    fn import_cookies(
+        &self,
+        _cookies: serde_json::Value,
+        on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
+    ) {
+        on_result(Err("browser cookie import requires WebKit support".to_string()));
+    }
+
     fn data(
         &self,
         _method: String,
@@ -5241,8 +5489,8 @@ fn create_browser_widget(
     use webkit6::prelude::*;
 
     // Use a NetworkSession to avoid sandbox issues
-    let network_session = webkit6::NetworkSession::default();
-    let web_context = webkit6::WebContext::default();
+    let network_session = webkit6::NetworkSession::default()
+        .unwrap_or_else(webkit6::NetworkSession::new_ephemeral);
     let user_content_manager = webkit6::UserContentManager::new();
     let dom_editable = Rc::new(Cell::new(false));
     let _ = user_content_manager
@@ -5269,6 +5517,7 @@ fn create_browser_widget(
     }
 
     let webview = webkit6::WebView::builder()
+        .network_session(&network_session)
         .user_content_manager(&user_content_manager)
         .hexpand(true)
         .vexpand(true)

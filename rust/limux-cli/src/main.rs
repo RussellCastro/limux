@@ -413,6 +413,21 @@ struct BrowserCookieImportRow {
     path: Option<String>,
     http_only: bool,
     secure: bool,
+    expires_unix: Option<i64>,
+}
+
+impl BrowserCookieImportRow {
+    fn to_import_json(&self) -> Value {
+        json!({
+            "name": self.name.clone(),
+            "value": self.value.clone(),
+            "domain": self.domain.clone(),
+            "path": self.path.clone(),
+            "http_only": self.http_only,
+            "secure": self.secure,
+            "expires_unix": self.expires_unix,
+        })
+    }
 }
 
 impl BrowserCookieImportFormat {
@@ -434,6 +449,13 @@ impl BrowserCookieImportFormat {
             other => other,
         }
     }
+}
+
+fn is_unknown_method_error(error: &anyhow::Error) -> bool {
+    let message = error.to_string().to_ascii_lowercase();
+    message.contains("-32601")
+        || message.contains("unknown method")
+        || message.contains("method not found")
 }
 
 fn load_browser_cookie_import_file(
@@ -470,6 +492,17 @@ fn parse_browser_cookie_import_json(
         .collect()
 }
 
+fn get_i64(value: &Value, keys: &[&str]) -> Option<i64> {
+    keys.iter().find_map(|key| {
+        let value = value.get(*key)?;
+        value
+            .as_i64()
+            .or_else(|| value.as_u64().and_then(|raw| i64::try_from(raw).ok()))
+            .or_else(|| value.as_f64().map(|raw| raw as i64))
+            .or_else(|| value.as_str().and_then(|raw| raw.parse::<i64>().ok()))
+    })
+}
+
 fn json_cookie_import_row(value: &Value) -> Result<BrowserCookieImportRow> {
     let map = value
         .as_object()
@@ -486,6 +519,15 @@ fn json_cookie_import_row(value: &Value) -> Result<BrowserCookieImportRow> {
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let secure = map.get("secure").and_then(Value::as_bool).unwrap_or(false);
+    let expires_unix = get_i64(value, &[
+        "expires_unix",
+        "expires",
+        "expiry",
+        "expiration",
+        "expirationDate",
+        "expiration_date",
+    ])
+    .filter(|value| *value > 0);
 
     Ok(BrowserCookieImportRow {
         name,
@@ -494,6 +536,7 @@ fn json_cookie_import_row(value: &Value) -> Result<BrowserCookieImportRow> {
         path,
         http_only,
         secure,
+        expires_unix,
     })
 }
 
@@ -536,6 +579,7 @@ fn parse_browser_cookie_import_netscape(
             path: Some(parts[2].trim().to_string()).filter(|value| !value.is_empty()),
             http_only,
             secure: parts[3].eq_ignore_ascii_case("TRUE"),
+            expires_unix: parts[4].trim().parse::<i64>().ok().filter(|value| *value > 0),
         });
     }
     Ok(rows)
@@ -3765,41 +3809,67 @@ async fn run_browser(
                 parse_opt(&browser_args, "--format").as_deref(),
             )?;
             let cookies = load_browser_cookie_import_file(Path::new(&file), format)?;
-            let mut imported = Vec::new();
-            let mut skipped = Vec::new();
-
-            for cookie in cookies {
-                if cookie.http_only {
-                    skipped.push(json!({
-                        "name": cookie.name,
-                        "domain": cookie.domain,
-                        "path": cookie.path,
-                        "reason": "http_only cookies cannot be set through the current page bridge",
-                    }));
-                    continue;
-                }
-
+            let host_payload = browser_call(client, Some(sid.clone()), "browser.cookies.import", {
                 let mut p = Map::new();
-                p.insert("name".to_string(), Value::String(cookie.name.clone()));
-                p.insert("value".to_string(), Value::String(cookie.value.clone()));
-                browser_call(client, Some(sid.clone()), "browser.cookies.set", p).await?;
-                imported.push(json!({
-                    "name": cookie.name,
-                    "domain": cookie.domain,
-                    "path": cookie.path,
-                    "secure": cookie.secure,
-                }));
-            }
+                p.insert(
+                    "cookies".to_string(),
+                    Value::Array(
+                        cookies
+                            .iter()
+                            .map(BrowserCookieImportRow::to_import_json)
+                            .collect(),
+                    ),
+                );
+                p
+            })
+            .await;
 
-            CommandOutput::Json(json!({
-                "ok": true,
-                "file": file,
-                "imported_count": imported.len(),
-                "skipped_count": skipped.len(),
-                "imported": imported,
-                "skipped": skipped,
-                "note": "Imported cookies are set through the active WebKit page with document.cookie; native browser profile import remains tracked separately.",
-            }))
+            match host_payload {
+                Ok(mut payload) => {
+                    if let Some(map) = payload.as_object_mut() {
+                        map.insert("file".to_string(), Value::String(file));
+                    }
+                    CommandOutput::Json(payload)
+                }
+                Err(error) if is_unknown_method_error(&error) => {
+                    let mut imported = Vec::new();
+                    let mut skipped = Vec::new();
+
+                    for cookie in &cookies {
+                        if cookie.http_only {
+                            skipped.push(json!({
+                                "name": cookie.name.clone(),
+                                "domain": cookie.domain.clone(),
+                                "path": cookie.path.clone(),
+                                "reason": "http_only cookies cannot be set through the legacy page bridge",
+                            }));
+                            continue;
+                        }
+
+                        let mut p = Map::new();
+                        p.insert("name".to_string(), Value::String(cookie.name.clone()));
+                        p.insert("value".to_string(), Value::String(cookie.value.clone()));
+                        browser_call(client, Some(sid.clone()), "browser.cookies.set", p).await?;
+                        imported.push(json!({
+                            "name": cookie.name.clone(),
+                            "domain": cookie.domain.clone(),
+                            "path": cookie.path.clone(),
+                            "secure": cookie.secure,
+                        }));
+                    }
+
+                    CommandOutput::Json(json!({
+                        "ok": true,
+                        "file": file,
+                        "imported_count": imported.len(),
+                        "skipped_count": skipped.len(),
+                        "imported": imported,
+                        "skipped": skipped,
+                        "note": "Running host does not expose browser.cookies.import; imported page-visible cookies through document.cookie and skipped httpOnly rows.",
+                    }))
+                }
+                Err(error) => return Err(error),
+            }
         }
         "tab" => {
             let sid = surface
@@ -4766,7 +4836,8 @@ mod cli_arg_tests {
                         "value": "123",
                         "domain": ".example.com",
                         "path": "/",
-                        "secure": true
+                        "secure": true,
+                        "expirationDate": 1893456000
                     },
                     {
                         "key": "prefs",
@@ -4783,6 +4854,7 @@ mod cli_arg_tests {
         assert_eq!(json_rows[0].name, "sid");
         assert_eq!(json_rows[0].domain.as_deref(), Some(".example.com"));
         assert!(json_rows[0].secure);
+        assert_eq!(json_rows[0].expires_unix, Some(1893456000));
         assert!(json_rows[1].http_only);
 
         let netscape_rows = parse_browser_cookie_import_netscape(
@@ -4796,6 +4868,7 @@ mod cli_arg_tests {
         assert_eq!(netscape_rows[0].domain.as_deref(), Some(".example.com"));
         assert!(netscape_rows[0].http_only);
         assert!(!netscape_rows[0].secure);
+        assert_eq!(netscape_rows[0].expires_unix, None);
         assert_eq!(netscape_rows[1].name, "theme");
         assert!(netscape_rows[1].secure);
     }
