@@ -18,6 +18,8 @@ mod agent_hooks;
 
 const CLI_STATE_LOCK_TIMEOUT: Duration = Duration::from_secs(2);
 const CLI_STATE_LOCK_RETRY: Duration = Duration::from_millis(25);
+const DEFAULT_BROWSER_PROFILE_SQLITE_INSPECT_LIMIT: usize = 25;
+const MAX_BROWSER_PROFILE_SQLITE_INSPECT_LIMIT: usize = 500;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IdFormat {
@@ -231,6 +233,7 @@ fn print_help() {
             "      browser profiles [--browser <name>] [--include-missing]\n",
             "      browser profile-data --profile-path <path> [--family chromium|firefox] [--types cookies,history,sessions] --dry-run\n",
             "      browser profile-data --profile-path <path> --allow-profile-read --out-dir <dir>\n",
+            "      browser profile-data --profile-path <path> --allow-profile-read --inspect-sqlite [--inspect-limit <n>]\n",
             "      browser import-cookies --file <path> [--format auto|json|netscape]\n",
             "  list-notifications [--unread]\n",
             "  clear-notifications [--id <notification-id>]\n",
@@ -796,6 +799,15 @@ struct BrowserProfileDataStore {
     path: PathBuf,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct BrowserProfileDataOptions<'a> {
+    dry_run: bool,
+    allow_profile_read: bool,
+    out_dir: Option<&'a Path>,
+    inspect_sqlite: bool,
+    inspect_limit: usize,
+}
+
 fn parse_browser_profile_data_types(raw: Option<&str>) -> Result<Vec<BrowserProfileDataKind>> {
     let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(vec![
@@ -837,6 +849,22 @@ fn parse_browser_profile_data_types(raw: Option<&str>) -> Result<Vec<BrowserProf
         bail!("browser profile-data --types did not contain any supported entries");
     }
     Ok(kinds)
+}
+
+fn parse_browser_profile_inspect_limit(raw: Option<&str>) -> Result<usize> {
+    let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(DEFAULT_BROWSER_PROFILE_SQLITE_INSPECT_LIMIT);
+    };
+    let limit = raw.parse::<usize>().with_context(|| {
+        format!("browser profile-data --inspect-limit must be a number, got {raw}")
+    })?;
+    if !(1..=MAX_BROWSER_PROFILE_SQLITE_INSPECT_LIMIT).contains(&limit) {
+        bail!(
+            "browser profile-data --inspect-limit must be between 1 and {}, got {limit}",
+            MAX_BROWSER_PROFILE_SQLITE_INSPECT_LIMIT
+        );
+    }
+    Ok(limit)
 }
 
 fn infer_browser_profile_data_family(profile_path: &Path) -> Option<BrowserProfileDataFamily> {
@@ -924,6 +952,106 @@ fn browser_profile_data_stores(
         }
     }
     stores
+}
+
+fn browser_profile_sqlite_query(store: &BrowserProfileDataStore, limit: usize) -> Option<String> {
+    match store.role {
+        "chromium_network_cookies" | "chromium_legacy_cookies" => Some(format!(
+            "SELECT host_key AS domain, name, path, is_secure, is_httponly, expires_utc FROM cookies ORDER BY host_key, name LIMIT {limit}"
+        )),
+        "chromium_history" => Some(format!(
+            "SELECT url, title, visit_count, typed_count, last_visit_time FROM urls WHERE url IS NOT NULL ORDER BY last_visit_time DESC LIMIT {limit}"
+        )),
+        "firefox_cookies_sqlite" => Some(format!(
+            "SELECT host AS domain, name, path, isSecure AS is_secure, isHttpOnly AS is_httponly, expiry AS expires_unix FROM moz_cookies ORDER BY host, name LIMIT {limit}"
+        )),
+        "firefox_places_sqlite" => Some(format!(
+            "SELECT url, title, visit_count, last_visit_date FROM moz_places WHERE url IS NOT NULL ORDER BY IFNULL(last_visit_date, 0) DESC LIMIT {limit}"
+        )),
+        _ => None,
+    }
+}
+
+fn inspect_browser_profile_sqlite_store(store: &BrowserProfileDataStore, limit: usize) -> Value {
+    if !store.path.is_file() {
+        return json!({
+            "ok": false,
+            "status": "unsupported",
+            "reason": "sqlite inspection only supports regular profile database files",
+        });
+    }
+    let Some(query) = browser_profile_sqlite_query(store, limit) else {
+        return json!({
+            "ok": false,
+            "status": "unsupported",
+            "reason": "store is not a supported SQLite history or cookie database",
+        });
+    };
+
+    let output = match Command::new("sqlite3")
+        .arg("-readonly")
+        .arg("-json")
+        .arg(&store.path)
+        .arg(&query)
+        .output()
+    {
+        Ok(output) => output,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return json!({
+                "ok": false,
+                "status": "sqlite3_not_found",
+                "reason": "sqlite3 was not found on PATH; install sqlite3 or use --out-dir staging only",
+            });
+        }
+        Err(error) => {
+            return json!({
+                "ok": false,
+                "status": "sqlite3_failed",
+                "reason": error.to_string(),
+            });
+        }
+    };
+
+    if !output.status.success() {
+        return json!({
+            "ok": false,
+            "status": "query_failed",
+            "exit_code": output.status.code(),
+            "stderr": String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        });
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let rows = if stdout.trim().is_empty() {
+        Value::Array(Vec::new())
+    } else {
+        match serde_json::from_str::<Value>(stdout.trim()) {
+            Ok(value) => value,
+            Err(error) => {
+                return json!({
+                    "ok": false,
+                    "status": "json_parse_failed",
+                    "reason": error.to_string(),
+                    "stdout": stdout.trim(),
+                });
+            }
+        }
+    };
+    let row_count = rows.as_array().map(Vec::len).unwrap_or(0);
+
+    json!({
+        "ok": true,
+        "status": "ok",
+        "row_count": row_count,
+        "limit": limit,
+        "rows": rows,
+        "value_columns_omitted": store.kind == BrowserProfileDataKind::Cookies,
+        "note": if store.kind == BrowserProfileDataKind::Cookies {
+            "Cookie inspection intentionally omits cookie payload columns. It only reports metadata needed to plan an import."
+        } else {
+            "History inspection reports browser-owned history metadata only; it does not import entries into WebKit."
+        },
+    })
 }
 
 fn safe_path_component(raw: &str) -> String {
@@ -1076,9 +1204,7 @@ fn browser_profile_data_payload(
     profile_path: &Path,
     family: Option<BrowserProfileDataFamily>,
     kinds: &[BrowserProfileDataKind],
-    dry_run: bool,
-    allow_profile_read: bool,
-    out_dir: Option<&Path>,
+    options: BrowserProfileDataOptions<'_>,
 ) -> Result<Value> {
     let metadata = fs::metadata(profile_path)
         .with_context(|| format!("failed to inspect profile path {}", profile_path.display()))?;
@@ -1100,12 +1226,15 @@ fn browser_profile_data_payload(
             )
         })?;
 
-    if !dry_run && !allow_profile_read {
+    if options.dry_run && options.inspect_sqlite {
+        bail!("browser profile-data --inspect-sqlite reads profile stores and cannot be combined with --dry-run");
+    }
+    if !options.dry_run && !options.allow_profile_read {
         bail!(
             "refusing to read browser profile data without --allow-profile-read; use --dry-run for a manifest only"
         );
     }
-    if !dry_run && out_dir.is_none() {
+    if !options.dry_run && options.out_dir.is_none() && !options.inspect_sqlite {
         bail!("browser profile-data requires --out-dir <path> when copying profile data");
     }
 
@@ -1119,7 +1248,8 @@ fn browser_profile_data_payload(
 
     for store in stores {
         let exists = store.path.exists();
-        let destination = out_dir
+        let destination = options
+            .out_dir
             .map(|out_dir| profile_store_destination(out_dir, &profile_path, family, &store));
         let mut row = Map::new();
         row.insert(
@@ -1165,7 +1295,7 @@ fn browser_profile_data_payload(
             continue;
         }
 
-        if dry_run {
+        if options.dry_run {
             row.insert(
                 "action".to_string(),
                 Value::String("would_copy".to_string()),
@@ -1174,7 +1304,19 @@ fn browser_profile_data_payload(
             continue;
         }
 
-        let destination = destination.expect("out_dir required for non-dry-run copy");
+        if options.inspect_sqlite {
+            row.insert(
+                "sqlite_inspection".to_string(),
+                inspect_browser_profile_sqlite_store(&store, options.inspect_limit),
+            );
+        }
+
+        let Some(destination) = destination else {
+            row.insert("action".to_string(), Value::String("inspected".to_string()));
+            rows.push(Value::Object(row));
+            continue;
+        };
+
         let (files, bytes, mut child_skipped) =
             copy_profile_store_path_no_overwrite(&store.path, &destination)?;
         copied_store_count = copied_store_count.saturating_add(1);
@@ -1195,12 +1337,14 @@ fn browser_profile_data_payload(
 
     Ok(json!({
         "ok": true,
-        "dry_run": dry_run,
-        "requires_consent": !allow_profile_read,
+        "dry_run": options.dry_run,
+        "requires_consent": !options.allow_profile_read,
         "profile_path": profile_path.display().to_string(),
         "family": family.as_str(),
         "types": kinds.iter().map(|kind| kind.as_str()).collect::<Vec<_>>(),
-        "out_dir": out_dir.map(|path| path.display().to_string()),
+        "out_dir": options.out_dir.map(|path| path.display().to_string()),
+        "sqlite_inspection": options.inspect_sqlite,
+        "sqlite_inspection_limit": if options.inspect_sqlite { Some(options.inspect_limit) } else { None },
         "store_count": rows.len(),
         "existing_store_count": existing_store_count,
         "copied_store_count": copied_store_count,
@@ -1208,7 +1352,7 @@ fn browser_profile_data_payload(
         "copied_bytes": copied_bytes,
         "stores": rows,
         "skipped": skipped,
-        "note": "This consent-gated profile-data step only stages raw browser-owned stores. It does not decrypt cookies or import history/sessions into WebKit yet.",
+        "note": "This consent-gated profile-data step stages raw browser-owned stores and can inspect SQLite cookie/history metadata when --inspect-sqlite is used. It does not decrypt cookies or import history/sessions into WebKit yet.",
     }))
 }
 
@@ -4221,7 +4365,7 @@ async fn run_browser(
         match arg.as_str() {
             "--workspace" | "--surface" | "--id-format" | "--timeout-ms" | "--load-state"
             | "--out" | "--file" | "--format" | "--browser" | "--profile-path" | "--family"
-            | "--types" | "--out-dir" => {
+            | "--types" | "--out-dir" | "--inspect-limit" => {
                 if idx + 1 < browser_args.len() {
                     skip = true;
                 }
@@ -4287,13 +4431,22 @@ async fn run_browser(
             let allow_profile_read = parse_flag(&browser_args, "--allow-profile-read")
                 || parse_flag(&browser_args, "--confirm-profile-read");
             let out_dir = parse_opt(&browser_args, "--out-dir").map(PathBuf::from);
+            let inspect_sqlite = parse_flag(&browser_args, "--inspect-sqlite")
+                || parse_flag(&browser_args, "--inspect");
+            let inspect_limit = parse_browser_profile_inspect_limit(
+                parse_opt(&browser_args, "--inspect-limit").as_deref(),
+            )?;
             CommandOutput::Json(browser_profile_data_payload(
                 Path::new(&profile_path),
                 family,
                 &kinds,
-                dry_run,
-                allow_profile_read,
-                out_dir.as_deref(),
+                BrowserProfileDataOptions {
+                    dry_run,
+                    allow_profile_read,
+                    out_dir: out_dir.as_deref(),
+                    inspect_sqlite,
+                    inspect_limit,
+                },
             )?)
         }
         "open" | "open-split" | "new" => {
@@ -5802,8 +5955,19 @@ mod cli_arg_tests {
 
         let kinds =
             parse_browser_profile_data_types(Some("cookies,history")).expect("profile data types");
-        let dry_run = browser_profile_data_payload(&profile, None, &kinds, true, false, None)
-            .expect("dry-run manifest");
+        let dry_run = browser_profile_data_payload(
+            &profile,
+            None,
+            &kinds,
+            BrowserProfileDataOptions {
+                dry_run: true,
+                allow_profile_read: false,
+                out_dir: None,
+                inspect_sqlite: false,
+                inspect_limit: DEFAULT_BROWSER_PROFILE_SQLITE_INSPECT_LIMIT,
+            },
+        )
+        .expect("dry-run manifest");
         assert_eq!(dry_run["dry_run"], true);
         assert_eq!(dry_run["requires_consent"], true);
         assert_eq!(dry_run["family"], "chromium");
@@ -5816,14 +5980,35 @@ mod cli_arg_tests {
                 row["role"] == "chromium_network_cookies" && row["action"] == "would_copy"
             }));
 
-        let err = browser_profile_data_payload(&profile, None, &kinds, false, false, None)
-            .expect_err("non-dry-run profile reads require explicit consent");
+        let err = browser_profile_data_payload(
+            &profile,
+            None,
+            &kinds,
+            BrowserProfileDataOptions {
+                dry_run: false,
+                allow_profile_read: false,
+                out_dir: None,
+                inspect_sqlite: false,
+                inspect_limit: DEFAULT_BROWSER_PROFILE_SQLITE_INSPECT_LIMIT,
+            },
+        )
+        .expect_err("non-dry-run profile reads require explicit consent");
         assert!(err.to_string().contains("--allow-profile-read"));
 
         let out_dir = dir.path().join("staged");
-        let copied =
-            browser_profile_data_payload(&profile, None, &kinds, false, true, Some(&out_dir))
-                .expect("copy profile data");
+        let copied = browser_profile_data_payload(
+            &profile,
+            None,
+            &kinds,
+            BrowserProfileDataOptions {
+                dry_run: false,
+                allow_profile_read: true,
+                out_dir: Some(&out_dir),
+                inspect_sqlite: false,
+                inspect_limit: DEFAULT_BROWSER_PROFILE_SQLITE_INSPECT_LIMIT,
+            },
+        )
+        .expect("copy profile data");
         assert_eq!(copied["dry_run"], false);
         assert_eq!(copied["requires_consent"], false);
         assert_eq!(copied["copied_store_count"], 2);
@@ -5853,9 +6038,13 @@ mod cli_arg_tests {
             &profile,
             Some(BrowserProfileDataFamily::Firefox),
             &kinds,
-            true,
-            false,
-            None,
+            BrowserProfileDataOptions {
+                dry_run: true,
+                allow_profile_read: false,
+                out_dir: None,
+                inspect_sqlite: false,
+                inspect_limit: DEFAULT_BROWSER_PROFILE_SQLITE_INSPECT_LIMIT,
+            },
         )
         .expect("firefox session manifest");
         assert_eq!(payload["family"], "firefox");
@@ -5865,6 +6054,98 @@ mod cli_arg_tests {
             .expect("stores")
             .iter()
             .any(|row| { row["role"] == "firefox_session_backups" && row["is_dir"] == true }));
+    }
+
+    #[test]
+    fn browser_profile_data_inspects_chromium_history_sqlite_metadata() {
+        if Command::new("sqlite3").arg("-version").output().is_err() {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let profile = dir.path().join("config/google-chrome/Default");
+        fs::create_dir_all(&profile).expect("profile dir");
+        let history = profile.join("History");
+        let status = Command::new("sqlite3")
+            .arg(&history)
+            .arg("CREATE TABLE urls(url TEXT, title TEXT, visit_count INTEGER, typed_count INTEGER, last_visit_time INTEGER); INSERT INTO urls VALUES('https://example.test', 'Example', 3, 1, 13217472000000000);")
+            .status()
+            .expect("sqlite3 create history");
+        assert!(status.success());
+
+        let kinds = parse_browser_profile_data_types(Some("history")).expect("types");
+        let payload = browser_profile_data_payload(
+            &profile,
+            Some(BrowserProfileDataFamily::Chromium),
+            &kinds,
+            BrowserProfileDataOptions {
+                dry_run: false,
+                allow_profile_read: true,
+                out_dir: None,
+                inspect_sqlite: true,
+                inspect_limit: 1,
+            },
+        )
+        .expect("inspect history");
+        assert_eq!(payload["sqlite_inspection"], true);
+        assert_eq!(payload["copied_file_count"], 0);
+        let rows = payload["stores"].as_array().expect("stores");
+        let history_row = rows
+            .iter()
+            .find(|row| row["role"] == "chromium_history")
+            .expect("history row");
+        assert_eq!(history_row["action"], "inspected");
+        assert_eq!(history_row["sqlite_inspection"]["ok"], true);
+        assert_eq!(history_row["sqlite_inspection"]["row_count"], 1);
+        assert_eq!(
+            history_row["sqlite_inspection"]["rows"][0]["url"],
+            "https://example.test"
+        );
+    }
+
+    #[test]
+    fn browser_profile_data_cookie_sqlite_inspection_omits_values() {
+        if Command::new("sqlite3").arg("-version").output().is_err() {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let profile = dir.path().join("config/google-chrome/Default");
+        fs::create_dir_all(profile.join("Network")).expect("network dir");
+        let cookies = profile.join("Network/Cookies");
+        let status = Command::new("sqlite3")
+            .arg(&cookies)
+            .arg("CREATE TABLE cookies(host_key TEXT, name TEXT, path TEXT, is_secure INTEGER, is_httponly INTEGER, expires_utc INTEGER, value TEXT, encrypted_value BLOB); INSERT INTO cookies VALUES('.example.test', 'sid', '/', 1, 1, 0, 'secret-cookie-value', X'736563726574');")
+            .status()
+            .expect("sqlite3 create cookies");
+        assert!(status.success());
+
+        let kinds = parse_browser_profile_data_types(Some("cookies")).expect("types");
+        let payload = browser_profile_data_payload(
+            &profile,
+            Some(BrowserProfileDataFamily::Chromium),
+            &kinds,
+            BrowserProfileDataOptions {
+                dry_run: false,
+                allow_profile_read: true,
+                out_dir: None,
+                inspect_sqlite: true,
+                inspect_limit: 10,
+            },
+        )
+        .expect("inspect cookies");
+        let rows = payload["stores"].as_array().expect("stores");
+        let cookie_row = rows
+            .iter()
+            .find(|row| row["role"] == "chromium_network_cookies")
+            .expect("cookie row");
+        assert_eq!(cookie_row["sqlite_inspection"]["ok"], true);
+        assert_eq!(
+            cookie_row["sqlite_inspection"]["value_columns_omitted"],
+            true
+        );
+        let inspection = serde_json::to_string(&cookie_row["sqlite_inspection"]).expect("json");
+        assert!(!inspection.contains("secret-cookie-value"));
+        assert!(!inspection.contains("encrypted_value"));
+        assert!(!inspection.contains("\"value\""));
     }
 
     #[test]

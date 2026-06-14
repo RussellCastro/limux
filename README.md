@@ -149,11 +149,12 @@ schema and palette behavior.
 Limux can discover local Chrome-family and Firefox profile stores with
 `limux browser profiles`, stage raw cookie/history/session stores behind an
 explicit `limux browser profile-data --allow-profile-read --out-dir <dir>`
-consent gate, then import JSON cookie exports or Netscape `cookies.txt` files
-into the active WebKit browser profile via `limux browser import-cookies --file
-<path>`. The live host uses WebKitGTK's cookie manager when available, including
-`httpOnly` rows. Native cookie database extraction/decryption plus actual
-history/session import remain tracked in the cmux parity contract.
+consent gate, inspect supported SQLite cookie/history metadata with
+`--inspect-sqlite`, then import JSON cookie exports or Netscape `cookies.txt`
+files into the active WebKit browser profile via `limux browser import-cookies
+--file <path>`. The live host uses WebKitGTK's cookie manager when available,
+including `httpOnly` rows. Native cookie decryption plus actual history/session
+import remain tracked in the cmux parity contract.
 
 See [`docs/browser-import.md`](docs/browser-import.md) for supported formats and
 current limitations.

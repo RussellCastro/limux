@@ -1,13 +1,14 @@
 # Browser import
 
 `limux browser profiles` discovers local Chrome-family and Firefox profile
-stores. `limux browser profile-data` creates a consent-gated manifest or staged
-copy of raw browser-owned cookie, history, and session stores. `limux browser
-import-cookies` imports cookie files into the currently selected WebKit browser
-surface. Current hosts use WebKitGTK's `CookieManager`, so `httpOnly`, domain,
-path, secure, and expiration/max-age attributes are preserved for imported rows
-when the export includes them. This is still not a full Chrome, Firefox, or Arc
-profile importer.
+stores. `limux browser profile-data` creates a consent-gated manifest, staged
+copy of raw browser-owned cookie/history/session stores, or SQLite metadata
+inspection of supported cookie/history stores. `limux browser import-cookies`
+imports cookie files into the currently selected WebKit browser surface. Current
+hosts use WebKitGTK's `CookieManager`, so `httpOnly`, domain, path, secure, and
+expiration/max-age attributes are preserved for imported rows when the export
+includes them. This is still not a full Chrome, Firefox, or Arc profile
+importer.
 
 ## Usage
 
@@ -17,6 +18,7 @@ limux browser profiles --browser firefox --include-missing
 limux browser profile-data --profile-path ~/.config/google-chrome/Default --dry-run
 limux browser profile-data --profile-path ~/.mozilla/firefox/abc.default-release --types sessions --dry-run
 limux browser profile-data --profile-path ~/.config/google-chrome/Default --allow-profile-read --out-dir ./limux-profile-stage
+limux browser profile-data --profile-path ~/.config/google-chrome/Default --types history --allow-profile-read --inspect-sqlite --inspect-limit 10
 limux browser --surface "$LIMUX_SURFACE_ID" import-cookies --file ./cookies.json
 limux browser "$LIMUX_SURFACE_ID" import-cookies ./cookies.txt --format netscape
 ```
@@ -45,9 +47,19 @@ existing destination files, and skips symlinks. For Chromium profiles it knows
 knows `cookies.sqlite`, `places.sqlite`, `sessionstore.jsonlz4`, and
 `sessionstore-backups`.
 
-The staged files are raw browser-owned stores. Limux does not decrypt cookies,
-parse browser history databases, or import browser sessions into WebKit from
-this command yet.
+With `--inspect-sqlite`, the command also runs bounded read-only SQLite metadata
+queries through `sqlite3` for supported cookie and history databases.
+`--inspect-limit <n>` caps returned rows, defaulting to 25 and maxing at 500.
+Chromium cookie inspection reports domain/name/path/security/expiry metadata
+from `Network/Cookies` or legacy `Cookies`; Firefox cookie inspection reports the
+same metadata from `cookies.sqlite`. History inspection reports URL/title/count
+metadata from Chromium `History` or Firefox `places.sqlite`. Cookie payload
+columns are intentionally omitted; Limux does not decrypt cookie values here.
+
+The staged files are raw browser-owned stores. Limux can inspect supported
+SQLite cookie/history metadata, but it does not decrypt cookies, import browser
+history into WebKit, or import browser sessions into WebKit from this command
+yet.
 
 ## Cookie-file import
 
@@ -111,8 +123,8 @@ surface is on `about:blank` or another hostless URI, domainless rows are
 reported as skipped. Import the file after navigating the browser surface to the
 target origin when your export omits domains.
 
-Profile discovery reports local store paths only, and profile-data staging
-copies raw browser-owned stores only after explicit consent. Reading SQLite rows,
-decrypting browser-owned cookie values, importing browser history into WebKit,
-importing browser sessions, and Arc-specific profile discovery remain open
-cmux-parity work.
+Profile discovery reports local store paths only, and profile-data staging or
+SQLite inspection reads browser-owned stores only after explicit consent. SQLite
+inspection is metadata-only and bounded. Decrypting browser-owned cookie values,
+importing browser history into WebKit, importing browser sessions, and
+Arc-specific profile discovery remain open cmux-parity work.
