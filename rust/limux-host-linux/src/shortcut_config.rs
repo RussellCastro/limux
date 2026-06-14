@@ -29,6 +29,7 @@ pub enum ShortcutId {
     SplitDown,
     NewTerminalInFocusedPane,
     SplitRight,
+    CloseFocusedTab,
     CloseFocusedPane,
     ToggleFocusedPaneZoom,
     NewTerminal,
@@ -82,6 +83,7 @@ pub enum ShortcutCommand {
     SplitDown,
     NewTerminal,
     SplitRight,
+    CloseFocusedTab,
     CloseFocusedPane,
     ToggleFocusedPaneZoom,
     FocusLeft,
@@ -313,7 +315,7 @@ struct ShortcutConfigFile {
     shortcuts: HashMap<String, serde_json::Value>,
 }
 
-const SHORTCUT_DEFINITIONS: [ShortcutDefinition; 49] = [
+const SHORTCUT_DEFINITIONS: [ShortcutDefinition; 50] = [
     ShortcutDefinition {
         id: ShortcutId::NewWorkspace,
         config_key: "new_workspace",
@@ -480,10 +482,21 @@ const SHORTCUT_DEFINITIONS: [ShortcutDefinition; 49] = [
         editable_capture_policy: EditableCapturePolicy::BypassInEditable,
     },
     ShortcutDefinition {
+        id: ShortcutId::CloseFocusedTab,
+        config_key: "close_focused_tab",
+        action_name: "win.close-focused-tab",
+        default_accel: "<Ctrl>w",
+        label: "Close Focused Tab",
+        registers_gtk_accel: false,
+        command: ShortcutCommand::CloseFocusedTab,
+        scope: ShortcutScope::Window,
+        editable_capture_policy: EditableCapturePolicy::BypassInEditable,
+    },
+    ShortcutDefinition {
         id: ShortcutId::CloseFocusedPane,
         config_key: "close_focused_pane",
         action_name: "win.close-focused-pane",
-        default_accel: "<Ctrl>w",
+        default_accel: "<Ctrl><Alt>w",
         label: "Close Focused Pane",
         registers_gtk_accel: false,
         command: ShortcutCommand::CloseFocusedPane,
@@ -1715,7 +1728,7 @@ mod tests {
 
     #[test]
     fn definitions_cover_current_host_shortcuts() {
-        assert_eq!(definitions().len(), 49);
+        assert_eq!(definitions().len(), 50);
     }
 
     #[test]
@@ -2210,6 +2223,14 @@ mod tests {
             Some(ShortcutCommand::NewTerminal)
         );
         assert_eq!(
+            resolved.command_for_runtime_combo("ctrl+w"),
+            Some(ShortcutCommand::CloseFocusedTab)
+        );
+        assert_eq!(
+            resolved.command_for_runtime_combo("ctrl+alt+w"),
+            Some(ShortcutCommand::CloseFocusedPane)
+        );
+        assert_eq!(
             resolved.command_for_runtime_combo("ctrl+9"),
             Some(ShortcutCommand::ActivateLastWorkspace)
         );
@@ -2235,6 +2256,18 @@ mod tests {
                 .map(ResolvedShortcut::default_display_label)
                 .as_deref(),
             Some("Ctrl+D")
+        );
+        assert_eq!(
+            resolved
+                .default_display_label_for_id(ShortcutId::CloseFocusedTab)
+                .as_deref(),
+            Some("Ctrl+W")
+        );
+        assert_eq!(
+            resolved
+                .default_display_label_for_id(ShortcutId::CloseFocusedPane)
+                .as_deref(),
+            Some("Ctrl+Alt+W")
         );
         assert_eq!(
             resolved

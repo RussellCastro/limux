@@ -1781,6 +1781,41 @@ pub fn focus_active_tab_in_pane(pane_widget: &gtk::Widget) -> bool {
     true
 }
 
+pub fn close_active_tab_in_pane(pane_widget: &gtk::Widget) -> bool {
+    let Some(internals) = find_pane_internals(pane_widget) else {
+        return false;
+    };
+
+    let target_tab_id = {
+        let tab_state = internals.tab_state.borrow();
+        let Some(active_id) = tab_state
+            .active_tab
+            .as_deref()
+            .or_else(|| tab_state.tabs.first().map(|entry| entry.id.as_str()))
+        else {
+            return false;
+        };
+        let Some(entry) = tab_state.tabs.iter().find(|entry| entry.id == active_id) else {
+            return false;
+        };
+        if entry.pinned {
+            return false;
+        }
+        entry.id.clone()
+    };
+
+    remove_tab(
+        &internals.tab_strip,
+        &internals.content_stack,
+        &internals.tab_state,
+        &target_tab_id,
+        &internals.callbacks,
+        &internals.pane_outer,
+        PaneEmptyReason::ClosedLastTab,
+    );
+    true
+}
+
 pub fn refresh_terminal_displays_in_root(root: &gtk::Widget) {
     for internals in pane_internals_for_root(root) {
         for entry in &internals.tab_state.borrow().tabs {
@@ -5492,6 +5527,10 @@ mod tests {
         assert_eq!(
             pane_action_tooltip(&defaults, "New browser tab", None),
             "New browser tab"
+        );
+        assert_eq!(
+            pane_action_tooltip(&defaults, "Close pane", Some(ShortcutId::CloseFocusedPane)),
+            "Close pane (Ctrl+Alt+W)"
         );
 
         let remapped = resolve_shortcuts_from_str(

@@ -242,7 +242,8 @@ Most default shortcuts use `Ctrl`. Fullscreen defaults to `F11`. Custom remaps m
 | `Ctrl+Shift+D` | Split down |
 | `Ctrl+Shift+T` | New terminal tab in the focused pane |
 | `Ctrl+D` | Split right |
-| `Ctrl+W` | Close focused pane |
+| `Ctrl+W` | Close focused tab |
+| `Ctrl+Alt+W` | Close focused pane |
 | `Ctrl+Shift+Z` | Toggle focused pane zoom |
 | `Ctrl+M` | Toggle sidebar |
 | `Ctrl+Shift+M` | Toggle top bar |

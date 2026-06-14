@@ -2592,8 +2592,12 @@ fn dispatch_shortcut_command(state: &State, command: ShortcutCommand) -> bool {
             split_focused_pane(state, gtk::Orientation::Horizontal);
             true
         }
-        ShortcutCommand::CloseFocusedPane => {
+        ShortcutCommand::CloseFocusedTab => {
             close_focused_tab(state);
+            true
+        }
+        ShortcutCommand::CloseFocusedPane => {
+            close_focused_pane(state);
             true
         }
         ShortcutCommand::ToggleFocusedPaneZoom => {
@@ -7082,9 +7086,15 @@ fn cycle_focused_pane_tab(state: &State, delta: i32) {
 }
 
 fn close_focused_tab(state: &State) {
+    if let Some((_ws_id, pane_widget)) = find_focused_pane(state) {
+        pane::close_active_tab_in_pane(&pane_widget);
+    }
+}
+
+fn close_focused_pane(state: &State) {
     if let Some((ws_id, pane_widget)) = find_focused_pane(state) {
         let parent = pane_widget.parent();
-        // If this is the only pane (parent is Stack), don't close — keep workspace alive
+        // If this is the only pane (parent is Stack), don't close; keep workspace alive.
         if let Some(ref p) = parent {
             if p.downcast_ref::<gtk::Stack>().is_some() {
                 return;
@@ -8429,6 +8439,22 @@ mod tests {
                 gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::SHIFT_MASK
             ),
             Some(ShortcutCommand::ToggleTopBar)
+        );
+        assert_eq!(
+            shortcut_command_from_key_event(
+                &shortcuts,
+                gdk::Key::W,
+                gdk::ModifierType::CONTROL_MASK
+            ),
+            Some(ShortcutCommand::CloseFocusedTab)
+        );
+        assert_eq!(
+            shortcut_command_from_key_event(
+                &shortcuts,
+                gdk::Key::W,
+                gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK
+            ),
+            Some(ShortcutCommand::CloseFocusedPane)
         );
         assert_eq!(
             shortcut_command_from_key_event(
