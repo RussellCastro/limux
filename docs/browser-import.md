@@ -1,18 +1,28 @@
 # Browser import
 
-`limux browser import-cookies` imports cookie files into the currently selected
-WebKit browser surface. Current hosts use WebKitGTK's `CookieManager`, so
-`httpOnly`, domain, path, secure, and expiration/max-age attributes are
+`limux browser profiles` discovers local Chrome-family and Firefox profile
+stores. `limux browser import-cookies` imports cookie files into the currently
+selected WebKit browser surface. Current hosts use WebKitGTK's `CookieManager`,
+so `httpOnly`, domain, path, secure, and expiration/max-age attributes are
 preserved for imported rows when the export includes them.
-It is still a cookie-file import slice, not a full Chrome, Firefox, or Arc
-profile importer.
+It is still a discovery plus cookie-file import slice, not a full Chrome,
+Firefox, or Arc profile importer.
 
 ## Usage
 
 ```bash
+limux browser profiles
+limux browser profiles --browser firefox --include-missing
 limux browser --surface "$LIMUX_SURFACE_ID" import-cookies --file ./cookies.json
 limux browser "$LIMUX_SURFACE_ID" import-cookies ./cookies.txt --format netscape
 ```
+
+`profiles` returns JSON rows for discovered local browser profiles, including
+candidate cookie, history, and session-store paths. It currently covers common
+Linux Chrome-family roots under `XDG_CONFIG_HOME`/`~/.config` plus Firefox
+profiles under `~/.mozilla/firefox`. Use `--browser <name>` to filter by browser
+id/name and `--include-missing` to report known browser roots that were not
+found.
 
 `--format auto` is the default. `.json` files are parsed as JSON; other file
 extensions default to Netscape `cookies.txt` format. Use `--format json` or
@@ -74,5 +84,7 @@ surface is on `about:blank` or another hostless URI, domainless rows are
 reported as skipped. Import the file after navigating the browser surface to the
 target origin when your export omits domains.
 
-Full browser profile discovery, browser history import, and session import
-remain open cmux-parity work.
+Profile discovery reports local store paths only. Reading Chrome-family SQLite
+cookie stores, decrypting browser-owned cookie values, importing browser
+history, importing sessions, and Arc-specific profile discovery remain open
+cmux-parity work.

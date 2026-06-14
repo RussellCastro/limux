@@ -146,11 +146,13 @@ schema and palette behavior.
 
 ## Browser import
 
-Limux can import JSON cookie exports or Netscape `cookies.txt` files into the
-active WebKit browser profile via `limux browser import-cookies --file <path>`.
-The live host uses WebKitGTK's cookie manager when available, including
-`httpOnly` rows. Native Chrome, Firefox, and Arc profile discovery plus
-history/session import remain tracked in the cmux parity contract.
+Limux can discover local Chrome-family and Firefox profile stores with
+`limux browser profiles`, then import JSON cookie exports or Netscape
+`cookies.txt` files into the active WebKit browser profile via
+`limux browser import-cookies --file <path>`. The live host uses WebKitGTK's
+cookie manager when available, including `httpOnly` rows. Native cookie database
+extraction/decryption plus history/session import remain tracked in the cmux
+parity contract.
 
 See [`docs/browser-import.md`](docs/browser-import.md) for supported formats and
 current limitations.

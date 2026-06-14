@@ -228,6 +228,7 @@ fn print_help() {
             "  capture-pane (alias of read-screen)\n",
             "  tab-action --action <name> [--workspace <id|ref>] [--tab <id|ref>] [--title <text>] [--url <url>]\n",
             "  browser [--surface <id|ref>|<surface>] <subcommand> ...\n",
+            "      browser profiles [--browser <name>] [--include-missing]\n",
             "      browser import-cookies --file <path> [--format auto|json|netscape]\n",
             "  list-notifications [--unread]\n",
             "  clear-notifications [--id <notification-id>]\n",
@@ -428,6 +429,310 @@ impl BrowserCookieImportRow {
             "expires_unix": self.expires_unix,
         })
     }
+}
+
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BrowserProfileDiscoveryDirs {
+    home_dir: Option<PathBuf>,
+    config_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BrowserProfileFamily {
+    Chromium,
+    Firefox,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BrowserProfileCandidate {
+    id: &'static str,
+    name: &'static str,
+    family: BrowserProfileFamily,
+    root: PathBuf,
+}
+
+fn browser_profile_discovery_dirs() -> BrowserProfileDiscoveryDirs {
+    BrowserProfileDiscoveryDirs {
+        home_dir: dirs::home_dir(),
+        config_dir: dirs::config_dir(),
+    }
+}
+
+fn browser_profile_candidates_in(
+    dirs: &BrowserProfileDiscoveryDirs,
+) -> Vec<BrowserProfileCandidate> {
+    let mut candidates = Vec::new();
+    if let Some(config_dir) = &dirs.config_dir {
+        for (id, name, relative) in [
+            ("google-chrome", "Google Chrome", "google-chrome"),
+            ("google-chrome-beta", "Google Chrome Beta", "google-chrome-beta"),
+            ("google-chrome-unstable", "Google Chrome Unstable", "google-chrome-unstable"),
+            ("chromium", "Chromium", "chromium"),
+            ("brave", "Brave", "BraveSoftware/Brave-Browser"),
+            ("microsoft-edge", "Microsoft Edge", "microsoft-edge"),
+            ("microsoft-edge-beta", "Microsoft Edge Beta", "microsoft-edge-beta"),
+            ("vivaldi", "Vivaldi", "vivaldi"),
+        ] {
+            candidates.push(BrowserProfileCandidate {
+                id,
+                name,
+                family: BrowserProfileFamily::Chromium,
+                root: config_dir.join(relative),
+            });
+        }
+    }
+    if let Some(home_dir) = &dirs.home_dir {
+        candidates.push(BrowserProfileCandidate {
+            id: "firefox",
+            name: "Firefox",
+            family: BrowserProfileFamily::Firefox,
+            root: home_dir.join(".mozilla/firefox"),
+        });
+    }
+    candidates
+}
+
+fn browser_filter_matches(candidate: &BrowserProfileCandidate, filter: Option<&str>) -> bool {
+    let Some(filter) = filter.map(str::trim).filter(|value| !value.is_empty()) else {
+        return true;
+    };
+    let filter = filter.to_ascii_lowercase();
+    candidate.id.contains(&filter)
+        || candidate.name.to_ascii_lowercase().contains(&filter)
+        || (filter == "chrome" && candidate.id.starts_with("google-chrome"))
+        || (filter == "edge" && candidate.id.starts_with("microsoft-edge"))
+}
+
+fn path_state(path: PathBuf) -> Value {
+    json!({
+        "path": path.display().to_string(),
+        "exists": path.exists(),
+    })
+}
+
+fn browser_missing_candidate_payload(candidate: &BrowserProfileCandidate) -> Value {
+    json!({
+        "browser": candidate.id,
+        "browser_name": candidate.name,
+        "profile_root": candidate.root.display().to_string(),
+        "reason": "profile root not found",
+    })
+}
+
+fn chromium_profile_sort_key(path: &Path) -> (u8, String) {
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_string();
+    let rank = if name == "Default" {
+        0
+    } else if name.starts_with("Profile ") {
+        1
+    } else {
+        2
+    };
+    (rank, name)
+}
+
+fn looks_like_chromium_profile(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+        return false;
+    };
+    name == "Default"
+        || name.starts_with("Profile ")
+        || name == "Guest Profile"
+        || path.join("Preferences").exists()
+        || path.join("Network/Cookies").exists()
+        || path.join("History").exists()
+}
+
+fn discover_chromium_profiles(candidate: &BrowserProfileCandidate) -> Vec<Value> {
+    let mut profile_paths: Vec<PathBuf> = fs::read_dir(&candidate.root)
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.filter_map(|entry| entry.ok()))
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir() && looks_like_chromium_profile(path))
+        .collect();
+    profile_paths.sort_by_key(|path| chromium_profile_sort_key(path));
+
+    profile_paths
+        .into_iter()
+        .map(|profile_path| {
+            let profile_name = profile_path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or_default()
+                .to_string();
+            let cookie_store = profile_path.join("Network/Cookies");
+            json!({
+                "browser": candidate.id,
+                "browser_name": candidate.name,
+                "profile": profile_name,
+                "profile_path": profile_path.display().to_string(),
+                "profile_root": candidate.root.display().to_string(),
+                "family": "chromium",
+                "cookie_store": path_state(cookie_store),
+                "legacy_cookie_store": path_state(profile_path.join("Cookies")),
+                "history_store": path_state(profile_path.join("History")),
+                "session_store": path_state(profile_path.join("Sessions")),
+            })
+        })
+        .collect()
+}
+
+fn parse_firefox_profiles_ini(root: &Path, raw: &str) -> Vec<(String, PathBuf)> {
+    let mut profiles = Vec::new();
+    let mut section = String::new();
+    let mut values = BTreeMap::<String, String>::new();
+
+    fn flush_firefox_profile(
+        profiles: &mut Vec<(String, PathBuf)>,
+        root: &Path,
+        section: &str,
+        values: &BTreeMap<String, String>,
+    ) {
+        if !section.starts_with("Profile") {
+            return;
+        }
+        let Some(raw_path) = values.get("Path").filter(|value| !value.is_empty()) else {
+            return;
+        };
+        let is_relative = values.get("IsRelative").map(String::as_str).unwrap_or("1") != "0";
+        let path = if is_relative {
+            root.join(raw_path)
+        } else {
+            PathBuf::from(raw_path)
+        };
+        let name = values
+            .get("Name")
+            .cloned()
+            .or_else(|| {
+                path.file_name()
+                    .and_then(|value| value.to_str())
+                    .map(ToOwned::to_owned)
+            })
+            .unwrap_or_else(|| raw_path.to_string());
+        profiles.push((name, path));
+    }
+
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with(';') || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            flush_firefox_profile(&mut profiles, root, &section, &values);
+            section = line.trim_start_matches('[').trim_end_matches(']').to_string();
+            values.clear();
+            continue;
+        }
+        if let Some((key, value)) = line.split_once('=') {
+            values.insert(key.trim().to_string(), value.trim().to_string());
+        }
+    }
+    flush_firefox_profile(&mut profiles, root, &section, &values);
+    profiles
+}
+
+fn discover_firefox_profiles(candidate: &BrowserProfileCandidate) -> Vec<Value> {
+    let mut profiles = if let Ok(raw) = fs::read_to_string(candidate.root.join("profiles.ini")) {
+        parse_firefox_profiles_ini(&candidate.root, &raw)
+    } else {
+        Vec::new()
+    };
+
+    if profiles.is_empty() {
+        profiles = fs::read_dir(&candidate.root)
+            .ok()
+            .into_iter()
+            .flat_map(|entries| entries.filter_map(|entry| entry.ok()))
+            .map(|entry| entry.path())
+            .filter(|path| path.is_dir())
+            .filter(|path| {
+                path.join("cookies.sqlite").exists() || path.join("places.sqlite").exists()
+            })
+            .map(|path| {
+                let name = path
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or_default()
+                    .to_string();
+                (name, path)
+            })
+            .collect();
+    }
+
+    profiles.sort_by(|left, right| left.0.cmp(&right.0));
+    profiles
+        .into_iter()
+        .map(|(profile_name, profile_path)| {
+            json!({
+                "browser": candidate.id,
+                "browser_name": candidate.name,
+                "profile": profile_name,
+                "profile_path": profile_path.display().to_string(),
+                "profile_root": candidate.root.display().to_string(),
+                "family": "firefox",
+                "cookie_store": path_state(profile_path.join("cookies.sqlite")),
+                "history_store": path_state(profile_path.join("places.sqlite")),
+                "session_store": path_state(profile_path.join("sessionstore.jsonlz4")),
+                "session_backups": path_state(profile_path.join("sessionstore-backups")),
+            })
+        })
+        .collect()
+}
+
+fn browser_profiles_payload(filter: Option<&str>, include_missing: bool) -> Value {
+    browser_profiles_payload_in(&browser_profile_discovery_dirs(), filter, include_missing)
+}
+
+fn browser_profiles_payload_in(
+    dirs: &BrowserProfileDiscoveryDirs,
+    filter: Option<&str>,
+    include_missing: bool,
+) -> Value {
+    let mut profiles = Vec::new();
+    let mut missing_browsers = Vec::new();
+
+    for candidate in browser_profile_candidates_in(dirs)
+        .into_iter()
+        .filter(|candidate| browser_filter_matches(candidate, filter))
+    {
+        if !candidate.root.exists() {
+            if include_missing {
+                missing_browsers.push(browser_missing_candidate_payload(&candidate));
+            }
+            continue;
+        }
+        let before = profiles.len();
+        match candidate.family {
+            BrowserProfileFamily::Chromium => {
+                profiles.extend(discover_chromium_profiles(&candidate))
+            }
+            BrowserProfileFamily::Firefox => {
+                profiles.extend(discover_firefox_profiles(&candidate))
+            }
+        }
+        if include_missing && before == profiles.len() {
+            missing_browsers.push(json!({
+                "browser": candidate.id,
+                "browser_name": candidate.name,
+                "profile_root": candidate.root.display().to_string(),
+                "reason": "profile root exists but no profiles were found",
+            }));
+        }
+    }
+
+    json!({
+        "ok": true,
+        "profile_count": profiles.len(),
+        "profiles": profiles,
+        "missing_browsers": missing_browsers,
+        "note": "Profile discovery reports local store paths only; cookie database extraction/decryption, history import, and session import remain open cmux-parity work.",
+    })
 }
 
 impl BrowserCookieImportFormat {
@@ -3412,7 +3717,7 @@ async fn run_browser(
         }
         match arg.as_str() {
             "--workspace" | "--surface" | "--id-format" | "--timeout-ms" | "--load-state"
-            | "--out" | "--file" | "--format" => {
+            | "--out" | "--file" | "--format" | "--browser" => {
                 if idx + 1 < browser_args.len() {
                     skip = true;
                 }
@@ -3428,7 +3733,16 @@ async fn run_browser(
 
     let mut pos_idx = 0usize;
     let first = positional[0].clone();
-    let verbs_without_surface = ["open", "open-split", "new", "identify"];
+    let verbs_without_surface = [
+        "open",
+        "open-split",
+        "new",
+        "identify",
+        "import-cookies",
+        "profile",
+        "profiles",
+        "list-profiles",
+    ];
 
     if !verbs_without_surface.contains(&first.as_str()) {
         if !first.contains(':') && !first.contains('-') {
@@ -3446,6 +3760,13 @@ async fn run_browser(
     let rest = positional[(pos_idx + 1)..].to_vec();
 
     let output = match sub.as_str() {
+        "profile" | "profiles" | "list-profiles" => {
+            let filter = parse_opt(&browser_args, "--browser").or_else(|| rest.first().cloned());
+            CommandOutput::Json(browser_profiles_payload(
+                filter.as_deref(),
+                parse_flag(&browser_args, "--include-missing"),
+            ))
+        }
         "open" | "open-split" | "new" => {
             let url = rest
                 .first()
@@ -4871,6 +5192,64 @@ mod cli_arg_tests {
         assert_eq!(netscape_rows[0].expires_unix, None);
         assert_eq!(netscape_rows[1].name, "theme");
         assert!(netscape_rows[1].secure);
+    }
+
+
+    #[test]
+    fn browser_profile_discovery_finds_chromium_and_firefox_profiles() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let home = dir.path().join("home");
+        let config = dir.path().join("config");
+        let chrome_default = config.join("google-chrome/Default");
+        let firefox_profile = home.join(".mozilla/firefox/abc.default-release");
+
+        fs::create_dir_all(chrome_default.join("Network")).expect("chrome network dir");
+        fs::create_dir_all(chrome_default.join("Sessions")).expect("chrome sessions dir");
+        fs::write(chrome_default.join("Preferences"), "{}").expect("chrome preferences");
+        fs::write(chrome_default.join("Network/Cookies"), "").expect("chrome cookies");
+        fs::write(chrome_default.join("History"), "").expect("chrome history");
+
+        fs::create_dir_all(&firefox_profile).expect("firefox profile");
+        fs::write(
+            home.join(".mozilla/firefox/profiles.ini"),
+            "[Profile0]\nName=default-release\nIsRelative=1\nPath=abc.default-release\n",
+        )
+        .expect("firefox profiles.ini");
+        fs::write(firefox_profile.join("cookies.sqlite"), "").expect("firefox cookies");
+        fs::write(firefox_profile.join("places.sqlite"), "").expect("firefox places");
+
+        let payload = browser_profiles_payload_in(
+            &BrowserProfileDiscoveryDirs {
+                home_dir: Some(home),
+                config_dir: Some(config),
+            },
+            None,
+            false,
+        );
+        let profiles = payload["profiles"].as_array().expect("profiles array");
+        assert_eq!(payload["profile_count"], 2);
+        assert!(profiles.iter().any(|profile| {
+            profile["browser"] == "google-chrome"
+                && profile["profile"] == "Default"
+                && profile["cookie_store"]["exists"] == true
+                && profile["history_store"]["exists"] == true
+        }));
+        assert!(profiles.iter().any(|profile| {
+            profile["browser"] == "firefox"
+                && profile["profile"] == "default-release"
+                && profile["cookie_store"]["exists"] == true
+                && profile["history_store"]["exists"] == true
+        }));
+
+        let chrome_payload = browser_profiles_payload_in(
+            &BrowserProfileDiscoveryDirs {
+                home_dir: None,
+                config_dir: Some(dir.path().join("config")),
+            },
+            Some("chrome"),
+            false,
+        );
+        assert_eq!(chrome_payload["profile_count"], 1);
     }
 
     #[test]
