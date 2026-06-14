@@ -130,7 +130,10 @@ image drag/upload through `scp` are still tracked in the cmux parity contract.
 ## Project custom commands
 
 Limux reads project commands from `cmux.json` or `limux.json` and can launch
-them as new command workspaces from the CLI:
+them as new command workspaces from the native command palette or the CLI.
+Open the palette with `Ctrl+Shift+P`; it searches from the active workspace path.
+
+CLI examples:
 
 ```bash
 limux commands
@@ -139,8 +142,7 @@ limux commands run test --project "$PWD"
 ```
 
 See [`docs/custom-commands.md`](docs/custom-commands.md) for the accepted
-schema. The in-app command palette integration remains tracked in the cmux
-parity contract.
+schema and palette behavior.
 
 ## Agent integrations
 
@@ -206,6 +208,7 @@ Most default shortcuts use `Ctrl`. Fullscreen defaults to `F11`. Custom remaps m
 |---|---|
 | `Ctrl+Q` | Quit Limux |
 | `Ctrl+Alt+N` | Open a new Limux instance |
+| `Ctrl+Shift+P` | Open command palette |
 | `Ctrl+,` | Open settings and keybindings |
 | `F11` | Toggle fullscreen |
 

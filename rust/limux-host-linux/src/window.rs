@@ -21,14 +21,44 @@ use crate::layout_state::{
     self, AppSessionState, LayoutNodeState, LoadedSession, PaneState, WorkspaceState,
 };
 use crate::pane::{self, PaneCallbacks};
+use crate::project_commands;
 use crate::settings_editor;
 use crate::shortcut_config::{
-    self, EditableCapturePolicy, ResolvedShortcutConfig, ShortcutCommand, ShortcutId,
+    self, EditableCapturePolicy, ResolvedShortcutConfig, ShortcutCommand, ShortcutId, ShortcutScope,
 };
 use crate::split_tree::{self, SplitTreeContainer};
 
 const PANE_CREATE_COMMAND_READY_INTERVAL_MS: u64 = 50;
 const PANE_CREATE_COMMAND_READY_ATTEMPTS: u32 = 40;
+
+const COMMAND_PALETTE_CSS: &str = r#"
+.limux-command-palette {
+    background-color: @window_bg_color;
+    color: @window_fg_color;
+    padding: 12px;
+}
+.limux-command-palette-search {
+    margin-bottom: 10px;
+}
+.limux-command-palette-row {
+    padding: 10px 12px;
+}
+.limux-command-palette-title {
+    font-weight: 700;
+}
+.limux-command-palette-detail {
+    font-size: 12px;
+    opacity: 0.72;
+}
+.limux-command-palette-hint {
+    font-size: 12px;
+    opacity: 0.68;
+}
+.limux-command-palette-empty {
+    padding: 18px;
+    opacity: 0.72;
+}
+"#;
 
 // ---------------------------------------------------------------------------
 // State
@@ -1836,11 +1866,12 @@ pub fn build_window(app: &adw::Application) {
     // Load CSS
     let provider = gtk::CssProvider::new();
     let all_css = format!(
-        "{}\n{}\n{}\n{}",
+        "{}\n{}\n{}\n{}\n{}",
         build_window_css(background_opacity),
         pane::PANE_CSS,
         keybind_editor::KEYBIND_EDITOR_CSS,
         crate::settings_editor::SETTINGS_CSS,
+        COMMAND_PALETTE_CSS,
     );
     provider.load_from_data(&all_css);
     gtk::style_context_add_provider_for_display(
@@ -2552,6 +2583,7 @@ fn dispatch_shortcut_command(state: &State, command: ShortcutCommand) -> bool {
             true
         }
         ShortcutCommand::NewInstance => spawn_new_instance(state),
+        ShortcutCommand::OpenCommandPalette => open_command_palette(state),
         ShortcutCommand::OpenSettings => open_settings_dialog(state),
         ShortcutCommand::ToggleSidebar => {
             toggle_sidebar(state);
@@ -3283,6 +3315,28 @@ fn handle_config_changed(
     }
 }
 
+#[derive(Clone)]
+enum CommandPaletteAction {
+    BuiltIn(ShortcutCommand),
+    ProjectCommand(ProjectCommandPaletteAction),
+}
+
+#[derive(Clone)]
+struct ProjectCommandPaletteAction {
+    label: String,
+    command: String,
+    cwd: String,
+}
+
+#[derive(Clone)]
+struct CommandPaletteEntry {
+    title: String,
+    detail: String,
+    hint: Option<String>,
+    search_text: String,
+    action: CommandPaletteAction,
+}
+
 fn settings_editor_input(state: &State) -> settings_editor::SettingsEditorInput {
     let (config, shortcuts) = {
         let s = state.borrow();
@@ -3318,6 +3372,336 @@ fn open_settings_dialog(state: &State) -> bool {
     };
     settings_editor::present_settings_dialog(&parent, settings_editor_input(state));
     true
+}
+
+fn open_command_palette(state: &State) -> bool {
+    let entries = Rc::new(command_palette_entries(state));
+    let visible_actions = Rc::new(RefCell::new(Vec::<CommandPaletteAction>::new()));
+
+    let window = gtk::Window::builder()
+        .title("Command Palette")
+        .modal(true)
+        .default_width(720)
+        .default_height(520)
+        .build();
+    if let Some(parent) = active_window(state) {
+        window.set_transient_for(Some(&parent));
+    }
+
+    let outer = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(0)
+        .build();
+    outer.add_css_class("limux-command-palette");
+
+    let search = gtk::SearchEntry::builder()
+        .placeholder_text("Search commands")
+        .hexpand(true)
+        .build();
+    search.add_css_class("limux-command-palette-search");
+    outer.append(&search);
+
+    let list = gtk::ListBox::new();
+    list.set_selection_mode(gtk::SelectionMode::Single);
+    list.add_css_class("boxed-list");
+
+    let empty_label = gtk::Label::builder()
+        .label("No matching commands")
+        .xalign(0.0)
+        .visible(false)
+        .build();
+    empty_label.add_css_class("limux-command-palette-empty");
+
+    let scroller = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .child(&list)
+        .vexpand(true)
+        .build();
+
+    outer.append(&scroller);
+    outer.append(&empty_label);
+    window.set_child(Some(&outer));
+
+    refresh_command_palette_rows(
+        &list,
+        &empty_label,
+        &entries,
+        &visible_actions,
+        search.text().as_str(),
+    );
+
+    {
+        let list = list.clone();
+        let empty_label = empty_label.clone();
+        let entries = entries.clone();
+        let visible_actions = visible_actions.clone();
+        search.connect_search_changed(move |entry| {
+            refresh_command_palette_rows(
+                &list,
+                &empty_label,
+                &entries,
+                &visible_actions,
+                entry.text().as_str(),
+            );
+        });
+    }
+
+    {
+        let state = state.clone();
+        let window = window.clone();
+        let visible_actions = visible_actions.clone();
+        list.connect_row_activated(move |_, row| {
+            let index = row.index();
+            if index < 0 {
+                return;
+            }
+            let action = visible_actions.borrow().get(index as usize).cloned();
+            if let Some(action) = action {
+                window.close();
+                run_command_palette_action(&state, action);
+            }
+        });
+    }
+
+    {
+        let state = state.clone();
+        let window = window.clone();
+        let list = list.clone();
+        let visible_actions = visible_actions.clone();
+        search.connect_activate(move |_| {
+            let row = list.selected_row().or_else(|| list.row_at_index(0));
+            let Some(row) = row else {
+                return;
+            };
+            let index = row.index();
+            if index < 0 {
+                return;
+            }
+            let action = visible_actions.borrow().get(index as usize).cloned();
+            if let Some(action) = action {
+                window.close();
+                run_command_palette_action(&state, action);
+            }
+        });
+    }
+
+    {
+        let window = window.clone();
+        let key_controller = gtk::EventControllerKey::new();
+        key_controller.set_propagation_phase(gtk::PropagationPhase::Capture);
+        key_controller.connect_key_pressed(move |_, keyval, _, _| {
+            if keyval == gtk::gdk::Key::Escape {
+                window.close();
+                gtk::glib::Propagation::Stop
+            } else {
+                gtk::glib::Propagation::Proceed
+            }
+        });
+        window.add_controller(key_controller);
+    }
+
+    window.present();
+    search.grab_focus();
+    true
+}
+
+fn command_palette_entries(state: &State) -> Vec<CommandPaletteEntry> {
+    let shortcuts = {
+        let s = state.borrow();
+        s.shortcuts.clone()
+    };
+    let mut entries = Vec::new();
+
+    for definition in shortcut_config::definitions() {
+        if definition.command == ShortcutCommand::OpenCommandPalette {
+            continue;
+        }
+        let shortcut = shortcuts.display_label_for_id(definition.id);
+        let detail = match shortcut.as_deref() {
+            Some(label) => format!("{} · {}", shortcut_scope_label(definition.scope), label),
+            None => format!("{} · unbound", shortcut_scope_label(definition.scope)),
+        };
+        entries.push(CommandPaletteEntry::new(
+            definition.label.to_string(),
+            detail,
+            shortcut,
+            CommandPaletteAction::BuiltIn(definition.command),
+        ));
+    }
+
+    entries.extend(project_command_palette_entries(state));
+    entries
+}
+
+impl CommandPaletteEntry {
+    fn new(
+        title: String,
+        detail: String,
+        hint: Option<String>,
+        action: CommandPaletteAction,
+    ) -> Self {
+        let search_text = format!("{title}\n{detail}\n{}", hint.as_deref().unwrap_or(""))
+            .to_ascii_lowercase();
+        Self {
+            title,
+            detail,
+            hint,
+            search_text,
+            action,
+        }
+    }
+}
+
+fn shortcut_scope_label(scope: ShortcutScope) -> &'static str {
+    match scope {
+        ShortcutScope::AppGlobal => "App",
+        ShortcutScope::Window => "Window",
+        ShortcutScope::FocusedTerminal => "Terminal",
+        ShortcutScope::FocusedBrowser => "Browser",
+        ShortcutScope::FocusedSurface => "Surface",
+    }
+}
+
+fn project_command_palette_entries(state: &State) -> Vec<CommandPaletteEntry> {
+    let start = active_project_command_start_path(state);
+    let Some(config) = project_commands::find_project_command_config_in(&start) else {
+        return Vec::new();
+    };
+    let commands = match project_commands::load_project_commands_from_path(&config) {
+        Ok(commands) => commands,
+        Err(err) => {
+            eprintln!("limux: failed to load project commands for command palette: {err}");
+            return Vec::new();
+        }
+    };
+
+    commands
+        .into_iter()
+        .map(|definition| {
+            let cwd = project_commands::resolved_project_command_cwd(&definition, None);
+            let config_name = config
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_else(|| config.to_string_lossy().to_string());
+            let detail = format!("Project command · {config_name} · cwd {cwd}");
+            CommandPaletteEntry::new(
+                definition.label.clone(),
+                detail,
+                Some(definition.command.clone()),
+                CommandPaletteAction::ProjectCommand(ProjectCommandPaletteAction {
+                    label: definition.label,
+                    command: definition.command,
+                    cwd,
+                }),
+            )
+        })
+        .collect()
+}
+
+fn active_project_command_start_path(state: &State) -> PathBuf {
+    let workspace_path = {
+        let s = state.borrow();
+        s.active_workspace().and_then(|workspace| {
+            workspace
+                .cwd
+                .borrow()
+                .clone()
+                .or_else(|| workspace.folder_path.clone())
+        })
+    };
+
+    workspace_path
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok())
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| PathBuf::from("/"))
+}
+
+fn refresh_command_palette_rows(
+    list: &gtk::ListBox,
+    empty_label: &gtk::Label,
+    entries: &[CommandPaletteEntry],
+    visible_actions: &Rc<RefCell<Vec<CommandPaletteAction>>>,
+    query: &str,
+) {
+    while let Some(child) = list.first_child() {
+        list.remove(&child);
+    }
+
+    let mut actions = visible_actions.borrow_mut();
+    actions.clear();
+    for entry in entries.iter().filter(|entry| command_palette_entry_matches(entry, query)) {
+        let row = gtk::ListBoxRow::new();
+        row.set_activatable(true);
+        row.add_css_class("limux-command-palette-row");
+
+        let content = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(4)
+            .build();
+        let title = gtk::Label::builder()
+            .label(entry.title.as_str())
+            .xalign(0.0)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .build();
+        title.add_css_class("limux-command-palette-title");
+        let detail = gtk::Label::builder()
+            .label(entry.detail.as_str())
+            .xalign(0.0)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .build();
+        detail.add_css_class("limux-command-palette-detail");
+        content.append(&title);
+        content.append(&detail);
+        if let Some(hint) = &entry.hint {
+            let hint_label = gtk::Label::builder()
+                .label(hint.as_str())
+                .xalign(0.0)
+                .ellipsize(gtk::pango::EllipsizeMode::End)
+                .build();
+            hint_label.add_css_class("limux-command-palette-hint");
+            content.append(&hint_label);
+        }
+        row.set_child(Some(&content));
+        list.append(&row);
+        actions.push(entry.action.clone());
+    }
+    let has_rows = !actions.is_empty();
+    drop(actions);
+
+    empty_label.set_visible(!has_rows);
+    list.set_visible(has_rows);
+    if has_rows {
+        if let Some(row) = list.row_at_index(0) {
+            list.select_row(Some(&row));
+        }
+    }
+}
+
+fn command_palette_entry_matches(entry: &CommandPaletteEntry, query: &str) -> bool {
+    let normalized = query.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return true;
+    }
+    normalized
+        .split_whitespace()
+        .all(|term| entry.search_text.contains(term))
+}
+
+fn run_command_palette_action(state: &State, action: CommandPaletteAction) -> bool {
+    match action {
+        CommandPaletteAction::BuiltIn(command) => dispatch_shortcut_command(state, command),
+        CommandPaletteAction::ProjectCommand(command) => {
+            create_workspace_with_folder_and_command(
+                state,
+                &command.label,
+                &command.cwd,
+                command.command,
+            );
+            true
+        }
+    }
 }
 
 fn open_keybind_editor_tab(state: &State, pane_widget: &gtk::Widget) {
@@ -4438,6 +4822,24 @@ fn workspace_folder_path_from_input(
 }
 
 fn create_workspace_with_folder(state: &State, name: &str, folder_path: &str) {
+    create_workspace_with_folder_internal(state, name, folder_path, None);
+}
+
+fn create_workspace_with_folder_and_command(
+    state: &State,
+    name: &str,
+    folder_path: &str,
+    command: String,
+) {
+    create_workspace_with_folder_internal(state, name, folder_path, Some(command));
+}
+
+fn create_workspace_with_folder_internal(
+    state: &State,
+    name: &str,
+    folder_path: &str,
+    command: Option<String>,
+) {
     let workspace = WorkspaceState {
         id: None,
         name: name.to_string(),
@@ -4447,7 +4849,36 @@ fn create_workspace_with_folder(state: &State, name: &str, folder_path: &str) {
         layout: LayoutNodeState::Pane(PaneState::fallback(Some(folder_path))),
     };
     add_workspace_from_state(state, &workspace);
+
+    if let (Some(command), Some(workspace_id)) = (
+        command,
+        state
+            .borrow()
+            .active_workspace()
+            .map(|workspace| workspace.id.clone()),
+    ) {
+        queue_workspace_startup_command(state, workspace_id, command);
+    }
+
     request_session_save(state);
+}
+
+fn queue_workspace_startup_command(state: &State, workspace_id: String, command: String) {
+    let state = state.clone();
+    glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
+        let target = {
+            let app_state = state.borrow();
+            app_state
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.id == workspace_id)
+                .and_then(|workspace| pane::terminal_handle_for_surface(&workspace.root, None))
+        };
+        if let Some((_surface_id, handle)) = target {
+            handle.send_text(&command);
+            handle.send_text("\n");
+        }
+    });
 }
 
 fn dispatch_control_command(command: ControlCommand) {
@@ -5814,23 +6245,7 @@ fn handle_control_command(state: &State, command: ControlCommand) {
                     .and_then(|payload| payload["workspace_id"].as_str())
                     .map(ToOwned::to_owned),
             ) {
-                let state = state.clone();
-                glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
-                    let target = {
-                        let app_state = state.borrow();
-                        app_state
-                            .workspaces
-                            .iter()
-                            .find(|workspace| workspace.id == workspace_id)
-                            .and_then(|workspace| {
-                                pane::terminal_handle_for_surface(&workspace.root, None)
-                            })
-                    };
-                    if let Some((_surface_id, handle)) = target {
-                        handle.send_text(&command);
-                        handle.send_text("\n");
-                    }
-                });
+                queue_workspace_startup_command(state, workspace_id, command);
             }
 
             let _ = reply.send(result.ok_or_else(|| {

@@ -18,6 +18,7 @@ pub enum ShortcutId {
     CloseWorkspace,
     QuitApp,
     NewInstance,
+    OpenCommandPalette,
     OpenSettings,
     ToggleSidebar,
     ToggleTopBar,
@@ -73,6 +74,7 @@ pub enum ShortcutCommand {
     CloseWorkspace,
     QuitApp,
     NewInstance,
+    OpenCommandPalette,
     OpenSettings,
     ToggleSidebar,
     ToggleTopBar,
@@ -317,7 +319,7 @@ struct ShortcutConfigFile {
     shortcuts: HashMap<String, serde_json::Value>,
 }
 
-const SHORTCUT_DEFINITIONS: [ShortcutDefinition; 51] = [
+const SHORTCUT_DEFINITIONS: [ShortcutDefinition; 52] = [
     ShortcutDefinition {
         id: ShortcutId::NewWorkspace,
         config_key: "new_workspace",
@@ -360,6 +362,17 @@ const SHORTCUT_DEFINITIONS: [ShortcutDefinition; 51] = [
         registers_gtk_accel: true,
         command: ShortcutCommand::NewInstance,
         scope: ShortcutScope::AppGlobal,
+        editable_capture_policy: EditableCapturePolicy::AlwaysCapture,
+    },
+    ShortcutDefinition {
+        id: ShortcutId::OpenCommandPalette,
+        config_key: "open_command_palette",
+        action_name: "win.open-command-palette",
+        default_accel: "<Ctrl><Shift>p",
+        label: "Open Command Palette",
+        registers_gtk_accel: false,
+        command: ShortcutCommand::OpenCommandPalette,
+        scope: ShortcutScope::Window,
         editable_capture_policy: EditableCapturePolicy::AlwaysCapture,
     },
     ShortcutDefinition {
@@ -1741,7 +1754,7 @@ mod tests {
 
     #[test]
     fn definitions_cover_current_host_shortcuts() {
-        assert_eq!(definitions().len(), 51);
+        assert_eq!(definitions().len(), 52);
     }
 
     #[test]
@@ -2255,6 +2268,10 @@ mod tests {
             resolved.command_for_runtime_combo("ctrl+comma"),
             Some(ShortcutCommand::OpenSettings)
         );
+        assert_eq!(
+            resolved.command_for_runtime_combo("ctrl+shift+p"),
+            Some(ShortcutCommand::OpenCommandPalette)
+        );
     }
 
     #[test]
@@ -2291,6 +2308,12 @@ mod tests {
                 .default_display_label_for_id(ShortcutId::OpenSettings)
                 .as_deref(),
             Some("Ctrl+Comma")
+        );
+        assert_eq!(
+            resolved
+                .default_display_label_for_id(ShortcutId::OpenCommandPalette)
+                .as_deref(),
+            Some("Ctrl+Shift+P")
         );
         assert_eq!(
             resolved

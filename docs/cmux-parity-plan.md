@@ -71,8 +71,8 @@ dispatcher parity.
 **Still open (priority order):**
 
 - Browser command bridge parity beyond the first live slice: browser profile import, full accessibility-tree parity, richer live smokes, and full frame-stable refs.
-- Native command palette integration for built-in actions and `cmux.json`/`limux.json` project commands; the CLI can already list and launch project commands through `workspace.create`.
-- Remaining shortcut remapping parity decisions after the first-class `Ctrl+,` Settings/Keybindings shortcut.
+- Command palette live smoke coverage and a future shared CLI/host project-command parser.
+- Remaining shortcut remapping parity decisions after the first-class `Ctrl+Shift+P` palette and `Ctrl+,` Settings/Keybindings shortcuts.
 
 ### Phase 3 — `limux notify` + GUI toast/sidebar integration ✅
 `ControlCommand::CreateNotification` wired through the bridge into

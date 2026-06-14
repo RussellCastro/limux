@@ -263,6 +263,7 @@ Launch Limux and verify:
 - pane button tooltips show the default shortcut suffixes where applicable
 - `Ctrl+Q` quits Limux
 - `Ctrl+Alt+N` opens a second Limux instance
+- `Ctrl+Shift+P` opens the command palette
 - `Ctrl+,` opens Settings with Keybindings available in the settings switcher
 - `Ctrl+Alt+J` jumps to the latest notification target when a live notification exists
 - `Ctrl+K` clears terminal scrollback
