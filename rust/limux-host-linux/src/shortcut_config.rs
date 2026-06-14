@@ -26,6 +26,7 @@ pub enum ShortcutId {
     NextWorkspace,
     PrevWorkspace,
     JumpToNotification,
+    OpenNotificationPanel,
     CycleTabPrev,
     CycleTabNext,
     SplitDown,
@@ -82,6 +83,7 @@ pub enum ShortcutCommand {
     NextWorkspace,
     PrevWorkspace,
     JumpToNotification,
+    OpenNotificationPanel,
     CycleTabPrev,
     CycleTabNext,
     SplitDown,
@@ -319,7 +321,7 @@ struct ShortcutConfigFile {
     shortcuts: HashMap<String, serde_json::Value>,
 }
 
-const SHORTCUT_DEFINITIONS: [ShortcutDefinition; 52] = [
+const SHORTCUT_DEFINITIONS: [ShortcutDefinition; 53] = [
     ShortcutDefinition {
         id: ShortcutId::NewWorkspace,
         config_key: "new_workspace",
@@ -449,6 +451,17 @@ const SHORTCUT_DEFINITIONS: [ShortcutDefinition; 52] = [
         label: "Jump To Latest Notification",
         registers_gtk_accel: false,
         command: ShortcutCommand::JumpToNotification,
+        scope: ShortcutScope::Window,
+        editable_capture_policy: EditableCapturePolicy::AlwaysCapture,
+    },
+    ShortcutDefinition {
+        id: ShortcutId::OpenNotificationPanel,
+        config_key: "open_notification_panel",
+        action_name: "win.open-notifications",
+        default_accel: "<Ctrl><Alt>o",
+        label: "Open Notifications",
+        registers_gtk_accel: false,
+        command: ShortcutCommand::OpenNotificationPanel,
         scope: ShortcutScope::Window,
         editable_capture_policy: EditableCapturePolicy::AlwaysCapture,
     },
@@ -1754,7 +1767,7 @@ mod tests {
 
     #[test]
     fn definitions_cover_current_host_shortcuts() {
-        assert_eq!(definitions().len(), 52);
+        assert_eq!(definitions().len(), 53);
     }
 
     #[test]
@@ -2265,6 +2278,10 @@ mod tests {
             Some(ShortcutCommand::JumpToNotification)
         );
         assert_eq!(
+            resolved.command_for_runtime_combo("ctrl+alt+o"),
+            Some(ShortcutCommand::OpenNotificationPanel)
+        );
+        assert_eq!(
             resolved.command_for_runtime_combo("ctrl+comma"),
             Some(ShortcutCommand::OpenSettings)
         );
@@ -2302,6 +2319,12 @@ mod tests {
                 .default_display_label_for_id(ShortcutId::CloseFocusedPane)
                 .as_deref(),
             Some("Ctrl+Alt+W")
+        );
+        assert_eq!(
+            resolved
+                .default_display_label_for_id(ShortcutId::OpenNotificationPanel)
+                .as_deref(),
+            Some("Ctrl+Alt+O")
         );
         assert_eq!(
             resolved

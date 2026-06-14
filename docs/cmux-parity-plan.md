@@ -81,9 +81,11 @@ also exposes `notification.list`, `notification.clear`, and `notification.jump`,
 with CLI coverage via `limux list-notifications [--unread]`,
 `limux clear-notifications [--id <n>]`, and `limux jump-notification [--id <n>]`.
 Notification rows retain workspace/pane/tab targets so jump can focus the latest
-unread source or a specific notification by id. Targeted notifications now also
-mark pane/tab attention CSS rings and clear them when the source is focused or
-notification state is cleared. The host shortcut registry maps `Ctrl+Alt+J` to
+unread source or a specific notification by id. The native notifications panel
+opens with `Ctrl+Alt+O` and can jump to, clear one, or clear all live rows.
+Targeted notifications now also mark pane/tab attention CSS rings and clear them
+when the source is focused or notification state is cleared. The host shortcut
+registry maps `Ctrl+Alt+J` to
 the same latest-notification jump path, and the binding can be remapped through
 `shortcuts.json`. Settings/Keybindings also has a first-class remappable
 `Ctrl+,` shortcut so the settings surface is reachable without the pane toolbar.

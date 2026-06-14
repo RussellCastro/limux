@@ -60,6 +60,38 @@ const COMMAND_PALETTE_CSS: &str = r#"
 }
 "#;
 
+const NOTIFICATION_PANEL_CSS: &str = r#"
+.limux-notification-panel {
+    background-color: @window_bg_color;
+    color: @window_fg_color;
+    padding: 12px;
+}
+.limux-notification-panel-header {
+    margin-bottom: 10px;
+}
+.limux-notification-panel-title {
+    font-weight: 700;
+}
+.limux-notification-panel-row {
+    padding: 10px 12px;
+}
+.limux-notification-panel-row-unread {
+    box-shadow: inset 3px 0 0 @accent_bg_color;
+}
+.limux-notification-panel-message {
+    font-weight: 700;
+}
+.limux-notification-panel-detail,
+.limux-notification-panel-body {
+    font-size: 12px;
+    opacity: 0.72;
+}
+.limux-notification-panel-empty {
+    padding: 18px;
+    opacity: 0.72;
+}
+"#;
+
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
@@ -1866,12 +1898,13 @@ pub fn build_window(app: &adw::Application) {
     // Load CSS
     let provider = gtk::CssProvider::new();
     let all_css = format!(
-        "{}\n{}\n{}\n{}\n{}",
+        "{}\n{}\n{}\n{}\n{}\n{}",
         build_window_css(background_opacity),
         pane::PANE_CSS,
         keybind_editor::KEYBIND_EDITOR_CSS,
         crate::settings_editor::SETTINGS_CSS,
         COMMAND_PALETTE_CSS,
+        NOTIFICATION_PANEL_CSS,
     );
     provider.load_from_data(&all_css);
     gtk::style_context_add_provider_for_display(
@@ -2606,6 +2639,7 @@ fn dispatch_shortcut_command(state: &State, command: ShortcutCommand) -> bool {
             true
         }
         ShortcutCommand::JumpToNotification => jump_to_latest_notification(state),
+        ShortcutCommand::OpenNotificationPanel => open_notification_panel(state),
         ShortcutCommand::CycleTabPrev => {
             cycle_focused_pane_tab(state, -1);
             true
@@ -3372,6 +3406,295 @@ fn open_settings_dialog(state: &State) -> bool {
     };
     settings_editor::present_settings_dialog(&parent, settings_editor_input(state));
     true
+}
+
+#[derive(Clone)]
+struct NotificationPanelRowData {
+    notification: LiveNotification,
+    workspace_name: String,
+}
+
+fn open_notification_panel(state: &State) -> bool {
+    let window = gtk::Window::builder()
+        .title("Notifications")
+        .modal(true)
+        .default_width(720)
+        .default_height(520)
+        .build();
+    if let Some(parent) = active_window(state) {
+        window.set_transient_for(Some(&parent));
+    }
+
+    let outer = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(0)
+        .build();
+    outer.add_css_class("limux-notification-panel");
+
+    let header = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .build();
+    header.add_css_class("limux-notification-panel-header");
+
+    let title = gtk::Label::builder()
+        .label("Notifications")
+        .xalign(0.0)
+        .hexpand(true)
+        .build();
+    title.add_css_class("limux-notification-panel-title");
+    let clear_all_button = gtk::Button::with_label("Clear All");
+    let close_button = gtk::Button::with_label("Close");
+    header.append(&title);
+    header.append(&clear_all_button);
+    header.append(&close_button);
+    outer.append(&header);
+
+    let list = gtk::ListBox::new();
+    list.set_selection_mode(gtk::SelectionMode::None);
+    list.add_css_class("boxed-list");
+
+    let empty_label = gtk::Label::builder()
+        .label("No notifications")
+        .xalign(0.0)
+        .visible(false)
+        .build();
+    empty_label.add_css_class("limux-notification-panel-empty");
+
+    let scroller = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .child(&list)
+        .vexpand(true)
+        .build();
+
+    outer.append(&scroller);
+    outer.append(&empty_label);
+    window.set_child(Some(&outer));
+
+    refresh_notification_panel_rows(state, &list, &empty_label, &clear_all_button, &window);
+
+    {
+        let window = window.clone();
+        close_button.connect_clicked(move |_| {
+            window.close();
+        });
+    }
+    {
+        let state = state.clone();
+        let list = list.clone();
+        let empty_label = empty_label.clone();
+        let clear_all_button = clear_all_button.clone();
+        let window = window.clone();
+        clear_all_button.connect_clicked(move |_| {
+            clear_live_notifications(&state, None);
+            refresh_notification_panel_rows(
+                &state,
+                &list,
+                &empty_label,
+                &clear_all_button,
+                &window,
+            );
+        });
+    }
+    {
+        let window = window.clone();
+        let key_controller = gtk::EventControllerKey::new();
+        key_controller.set_propagation_phase(gtk::PropagationPhase::Capture);
+        key_controller.connect_key_pressed(move |_, keyval, _, _| {
+            if keyval == gtk::gdk::Key::Escape {
+                window.close();
+                gtk::glib::Propagation::Stop
+            } else {
+                gtk::glib::Propagation::Proceed
+            }
+        });
+        window.add_controller(key_controller);
+    }
+
+    window.present();
+    true
+}
+
+fn notification_panel_rows(state: &State) -> Vec<NotificationPanelRowData> {
+    let s = state.borrow();
+    s.notifications
+        .iter()
+        .rev()
+        .cloned()
+        .map(|notification| {
+            let workspace_name = s
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.id == notification.target.workspace_id)
+                .map(|workspace| workspace.name.clone())
+                .unwrap_or_else(|| notification.target.workspace_id.clone());
+            NotificationPanelRowData {
+                notification,
+                workspace_name,
+            }
+        })
+        .collect()
+}
+
+fn refresh_notification_panel_rows(
+    state: &State,
+    list: &gtk::ListBox,
+    empty_label: &gtk::Label,
+    clear_all_button: &gtk::Button,
+    window: &gtk::Window,
+) {
+    while let Some(child) = list.first_child() {
+        list.remove(&child);
+    }
+
+    let rows = notification_panel_rows(state);
+    let has_rows = !rows.is_empty();
+    empty_label.set_visible(!has_rows);
+    list.set_visible(has_rows);
+    clear_all_button.set_sensitive(has_rows);
+
+    for row in rows {
+        list.append(&notification_panel_row(
+            state,
+            row,
+            list,
+            empty_label,
+            clear_all_button,
+            window,
+        ));
+    }
+}
+
+fn notification_panel_row(
+    state: &State,
+    data: NotificationPanelRowData,
+    list: &gtk::ListBox,
+    empty_label: &gtk::Label,
+    clear_all_button: &gtk::Button,
+    window: &gtk::Window,
+) -> gtk::ListBoxRow {
+    let notification = data.notification;
+    let row = gtk::ListBoxRow::new();
+    row.set_activatable(false);
+    row.add_css_class("limux-notification-panel-row");
+    if notification.unread {
+        row.add_css_class("limux-notification-panel-row-unread");
+    }
+
+    let outer = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(10)
+        .build();
+    let meta = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(4)
+        .hexpand(true)
+        .build();
+
+    let title = gtk::Label::builder()
+        .label(notification_panel_title(&notification).as_str())
+        .xalign(0.0)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .build();
+    title.add_css_class("limux-notification-panel-message");
+    meta.append(&title);
+
+    let detail = gtk::Label::builder()
+        .label(notification_panel_detail(&notification, &data.workspace_name).as_str())
+        .xalign(0.0)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .build();
+    detail.add_css_class("limux-notification-panel-detail");
+    meta.append(&detail);
+
+    if let Some(body) = notification_panel_body(&notification) {
+        let body_label = gtk::Label::builder()
+            .label(body.as_str())
+            .xalign(0.0)
+            .wrap(true)
+            .build();
+        body_label.add_css_class("limux-notification-panel-body");
+        meta.append(&body_label);
+    }
+
+    let actions = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(6)
+        .valign(gtk::Align::Center)
+        .build();
+    let jump_button = gtk::Button::with_label("Jump");
+    let clear_button = gtk::Button::with_label("Clear");
+    actions.append(&jump_button);
+    actions.append(&clear_button);
+
+    outer.append(&meta);
+    outer.append(&actions);
+    row.set_child(Some(&outer));
+
+    {
+        let state = state.clone();
+        let window = window.clone();
+        let notification_id = notification.id;
+        jump_button.connect_clicked(move |_| {
+            let _ = jump_to_live_notification(&state, Some(notification_id));
+            window.close();
+        });
+    }
+    {
+        let state = state.clone();
+        let list = list.clone();
+        let empty_label = empty_label.clone();
+        let clear_all_button = clear_all_button.clone();
+        let window = window.clone();
+        let notification_id = notification.id;
+        clear_button.connect_clicked(move |_| {
+            clear_live_notifications(&state, Some(notification_id));
+            refresh_notification_panel_rows(
+                &state,
+                &list,
+                &empty_label,
+                &clear_all_button,
+                &window,
+            );
+        });
+    }
+
+    row
+}
+
+fn notification_panel_title(notification: &LiveNotification) -> String {
+    if !notification.title.trim().is_empty() {
+        notification.title.clone()
+    } else if !notification.message.trim().is_empty() {
+        notification.message.clone()
+    } else {
+        format!("Notification {}", notification.id)
+    }
+}
+
+fn notification_panel_detail(notification: &LiveNotification, workspace_name: &str) -> String {
+    let status = if notification.unread { "Unread" } else { "Read" };
+    let target = match (notification.target.pane_id, notification.target.tab_id.as_deref()) {
+        (Some(pane_id), Some(tab_id)) => format!("pane {pane_id}, tab {tab_id}"),
+        (Some(pane_id), None) => format!("pane {pane_id}"),
+        _ => "workspace".to_string(),
+    };
+    format!("{status} - {workspace_name} - {target}")
+}
+
+fn notification_panel_body(notification: &LiveNotification) -> Option<String> {
+    if !notification.body.trim().is_empty() {
+        Some(notification.body.clone())
+    } else if !notification.subtitle.trim().is_empty() {
+        Some(notification.subtitle.clone())
+    } else if notification.message != notification.title
+        && !notification.message.trim().is_empty()
+    {
+        Some(notification.message.clone())
+    } else {
+        None
+    }
 }
 
 fn open_command_palette(state: &State) -> bool {
@@ -6591,41 +6914,7 @@ fn handle_control_command(state: &State, command: ControlCommand) {
             let _ = reply.send(Ok(payload));
         }
         ControlCommand::ClearNotifications { id, reply } => {
-            let payload = {
-                let mut app_state = state.borrow_mut();
-                if let Some(id) = id {
-                    let cleared_targets = app_state
-                        .notifications
-                        .iter()
-                        .filter(|notification| notification.id == id)
-                        .map(|notification| notification.target.clone())
-                        .collect::<Vec<_>>();
-                    app_state
-                        .notifications
-                        .retain(|notification| notification.id != id);
-                    for target in cleared_targets {
-                        clear_pane_attention_if_no_unread_target(&app_state, &target);
-                        clear_workspace_unread_if_no_unread_notification(
-                            &mut app_state,
-                            &target.workspace_id,
-                        );
-                    }
-                } else {
-                    let cleared_targets = app_state
-                        .notifications
-                        .iter()
-                        .map(|notification| notification.target.clone())
-                        .collect::<Vec<_>>();
-                    for target in cleared_targets {
-                        clear_pane_attention_for_target(&target);
-                    }
-                    app_state.notifications.clear();
-                    for workspace in &mut app_state.workspaces {
-                        clear_workspace_unread_visuals(workspace);
-                    }
-                }
-                live_notifications_payload(&app_state.notifications, false)
-            };
+            let payload = clear_live_notifications(state, id);
             let _ = reply.send(Ok(payload));
         }
         ControlCommand::JumpNotification { id, reply } => {
@@ -7927,6 +8216,42 @@ fn live_notifications_payload(
     serde_json::json!({ "notifications": rows })
 }
 
+fn clear_live_notifications(state: &State, id: Option<u64>) -> serde_json::Value {
+    let mut app_state = state.borrow_mut();
+    if let Some(id) = id {
+        let cleared_targets = app_state
+            .notifications
+            .iter()
+            .filter(|notification| notification.id == id)
+            .map(|notification| notification.target.clone())
+            .collect::<Vec<_>>();
+        app_state
+            .notifications
+            .retain(|notification| notification.id != id);
+        for target in cleared_targets {
+            clear_pane_attention_if_no_unread_target(&app_state, &target);
+            clear_workspace_unread_if_no_unread_notification(
+                &mut app_state,
+                &target.workspace_id,
+            );
+        }
+    } else {
+        let cleared_targets = app_state
+            .notifications
+            .iter()
+            .map(|notification| notification.target.clone())
+            .collect::<Vec<_>>();
+        for target in cleared_targets {
+            clear_pane_attention_for_target(&target);
+        }
+        app_state.notifications.clear();
+        for workspace in &mut app_state.workspaces {
+            clear_workspace_unread_visuals(workspace);
+        }
+    }
+    live_notifications_payload(&app_state.notifications, false)
+}
+
 fn select_live_notification(
     notifications: &[LiveNotification],
     id: Option<u64>,
@@ -8916,6 +9241,22 @@ mod tests {
                 gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK
             ),
             Some(ShortcutCommand::JumpToNotification)
+        );
+        assert_eq!(
+            shortcut_command_from_key_event(
+                &shortcuts,
+                gdk::Key::O,
+                gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK
+            ),
+            Some(ShortcutCommand::OpenNotificationPanel)
+        );
+        assert_eq!(
+            shortcut_command_from_key_event(
+                &shortcuts,
+                gdk::Key::P,
+                gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::SHIFT_MASK
+            ),
+            Some(ShortcutCommand::OpenCommandPalette)
         );
         assert_eq!(
             shortcut_command_from_key_event(

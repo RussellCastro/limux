@@ -266,6 +266,7 @@ Launch Limux and verify:
 - `Ctrl+Shift+P` opens the command palette
 - `Ctrl+,` opens Settings with Keybindings available in the settings switcher
 - `Ctrl+Alt+J` jumps to the latest notification target when a live notification exists
+- `Ctrl+Alt+O` opens the notifications panel
 - `Ctrl+K` clears terminal scrollback
 - `Ctrl+Shift+0` resets terminal font size
 

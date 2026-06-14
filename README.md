@@ -239,6 +239,7 @@ Most default shortcuts use `Ctrl`. Fullscreen defaults to `F11`. Custom remaps m
 | Shortcut | Action |
 |---|---|
 | `Ctrl+Alt+J` | Jump to latest notification |
+| `Ctrl+Alt+O` | Open notifications panel |
 
 ### Terminal
 
