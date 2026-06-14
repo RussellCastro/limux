@@ -2571,6 +2571,7 @@ fn dispatch_shortcut_command(state: &State, command: ShortcutCommand) -> bool {
             cycle_workspace(state, -1);
             true
         }
+        ShortcutCommand::JumpToNotification => jump_to_latest_notification(state),
         ShortcutCommand::CycleTabPrev => {
             cycle_focused_pane_tab(state, -1);
             true
@@ -6152,46 +6153,20 @@ fn handle_control_command(state: &State, command: ControlCommand) {
             let _ = reply.send(Ok(payload));
         }
         ControlCommand::JumpNotification { id, reply } => {
-            let notification = {
-                let mut app_state = state.borrow_mut();
-                let Some(notification) = select_live_notification(&app_state.notifications, id) else {
-                    let _ = reply.send(Err(crate::control_bridge::BridgeError::not_found(
-                        "notification not found",
-                    )));
-                    return;
-                };
-                if !app_state
-                    .workspaces
-                    .iter()
-                    .any(|workspace| workspace.id == notification.target.workspace_id)
-                {
-                    let _ = reply.send(Err(crate::control_bridge::BridgeError::not_found(
-                        "notification target not found",
-                    )));
-                    return;
+            match jump_to_live_notification(state, id) {
+                Ok(notification) => {
+                    let payload = serde_json::json!({
+                        "ok": true,
+                        "jumped": true,
+                        "notification_id": notification.id,
+                        "notification": live_notification_row(&notification),
+                    });
+                    let _ = reply.send(Ok(payload));
                 }
-                let notification = notification.clone();
-                for row in &mut app_state.notifications {
-                    if row.id == notification.id {
-                        row.unread = false;
-                    }
+                Err(error) => {
+                    let _ = reply.send(Err(error));
                 }
-                clear_pane_attention_if_no_unread_target(&app_state, &notification.target);
-                clear_workspace_unread_if_no_unread_notification(
-                    &mut app_state,
-                    &notification.target.workspace_id,
-                );
-                notification
-            };
-
-            activate_desktop_notification_target(state, &notification.target, None);
-            let payload = serde_json::json!({
-                "ok": true,
-                "jumped": true,
-                "notification_id": notification.id,
-                "notification": live_notification_row(&notification),
-            });
-            let _ = reply.send(Ok(payload));
+            }
         }
     }
 }
@@ -7506,6 +7481,49 @@ fn select_live_notification(
         .or_else(|| notifications.last())
 }
 
+fn jump_to_latest_notification(state: &State) -> bool {
+    let _ = jump_to_live_notification(state, None);
+    true
+}
+
+fn jump_to_live_notification(
+    state: &State,
+    id: Option<u64>,
+) -> Result<LiveNotification, crate::control_bridge::BridgeError> {
+    let notification = {
+        let mut app_state = state.borrow_mut();
+        let Some(notification) = select_live_notification(&app_state.notifications, id).cloned()
+        else {
+            return Err(crate::control_bridge::BridgeError::not_found(
+                "notification not found",
+            ));
+        };
+        if !app_state
+            .workspaces
+            .iter()
+            .any(|workspace| workspace.id == notification.target.workspace_id)
+        {
+            return Err(crate::control_bridge::BridgeError::not_found(
+                "notification target not found",
+            ));
+        }
+        for row in &mut app_state.notifications {
+            if row.id == notification.id {
+                row.unread = false;
+            }
+        }
+        clear_pane_attention_if_no_unread_target(&app_state, &notification.target);
+        clear_workspace_unread_if_no_unread_notification(
+            &mut app_state,
+            &notification.target.workspace_id,
+        );
+        notification
+    };
+
+    activate_desktop_notification_target(state, &notification.target, None);
+    Ok(notification)
+}
+
 fn mark_pane_attention_for_target(target: &DesktopNotificationTarget, source_focused: bool) {
     if source_focused {
         return;
@@ -8411,6 +8429,14 @@ mod tests {
                 gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::SHIFT_MASK
             ),
             Some(ShortcutCommand::ToggleTopBar)
+        );
+        assert_eq!(
+            shortcut_command_from_key_event(
+                &shortcuts,
+                gdk::Key::J,
+                gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK
+            ),
+            Some(ShortcutCommand::JumpToNotification)
         );
     }
 

@@ -215,6 +215,12 @@ Most default shortcuts use `Ctrl`. Fullscreen defaults to `F11`. Custom remaps m
 | `Ctrl+Shift+F` | Hide find |
 | `Ctrl+E` | Use selection for find |
 
+### Notifications
+
+| Shortcut | Action |
+|---|---|
+| `Ctrl+Alt+J` | Jump to latest notification |
+
 ### Terminal
 
 | Shortcut | Action |

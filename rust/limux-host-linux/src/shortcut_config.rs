@@ -23,6 +23,7 @@ pub enum ShortcutId {
     ToggleFullscreen,
     NextWorkspace,
     PrevWorkspace,
+    JumpToNotification,
     CycleTabPrev,
     CycleTabNext,
     SplitDown,
@@ -75,6 +76,7 @@ pub enum ShortcutCommand {
     ToggleFullscreen,
     NextWorkspace,
     PrevWorkspace,
+    JumpToNotification,
     CycleTabPrev,
     CycleTabNext,
     SplitDown,
@@ -311,7 +313,7 @@ struct ShortcutConfigFile {
     shortcuts: HashMap<String, serde_json::Value>,
 }
 
-const SHORTCUT_DEFINITIONS: [ShortcutDefinition; 48] = [
+const SHORTCUT_DEFINITIONS: [ShortcutDefinition; 49] = [
     ShortcutDefinition {
         id: ShortcutId::NewWorkspace,
         config_key: "new_workspace",
@@ -410,6 +412,17 @@ const SHORTCUT_DEFINITIONS: [ShortcutDefinition; 48] = [
         command: ShortcutCommand::PrevWorkspace,
         scope: ShortcutScope::Window,
         editable_capture_policy: EditableCapturePolicy::BypassInEditable,
+    },
+    ShortcutDefinition {
+        id: ShortcutId::JumpToNotification,
+        config_key: "jump_to_notification",
+        action_name: "win.jump-to-notification",
+        default_accel: "<Ctrl><Alt>j",
+        label: "Jump To Latest Notification",
+        registers_gtk_accel: false,
+        command: ShortcutCommand::JumpToNotification,
+        scope: ShortcutScope::Window,
+        editable_capture_policy: EditableCapturePolicy::AlwaysCapture,
     },
     ShortcutDefinition {
         id: ShortcutId::CycleTabPrev,
@@ -1702,7 +1715,7 @@ mod tests {
 
     #[test]
     fn definitions_cover_current_host_shortcuts() {
-        assert_eq!(definitions().len(), 48);
+        assert_eq!(definitions().len(), 49);
     }
 
     #[test]
@@ -2199,6 +2212,10 @@ mod tests {
         assert_eq!(
             resolved.command_for_runtime_combo("ctrl+9"),
             Some(ShortcutCommand::ActivateLastWorkspace)
+        );
+        assert_eq!(
+            resolved.command_for_runtime_combo("ctrl+alt+j"),
+            Some(ShortcutCommand::JumpToNotification)
         );
     }
 

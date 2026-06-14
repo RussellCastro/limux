@@ -81,7 +81,9 @@ with CLI coverage via `limux list-notifications [--unread]`,
 Notification rows retain workspace/pane/tab targets so jump can focus the latest
 unread source or a specific notification by id. Targeted notifications now also
 mark pane/tab attention CSS rings and clear them when the source is focused or
-notification state is cleared.
+notification state is cleared. The host shortcut registry maps `Ctrl+Alt+J` to
+the same latest-notification jump path, and the binding can be remapped through
+`shortcuts.json`.
 CLI: `limux notify [--workspace <id|name>] [--subtitle <…>] [--body <…>] <title>`.
 
 ### Phase 4 — `limux claude-hook` / `opencode-hook` / `gemini-hook` ✅
