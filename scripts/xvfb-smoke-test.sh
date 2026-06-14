@@ -22,6 +22,8 @@ echo "profile:   $PROFILE"
 echo "demo dir:  $DEMO_DIR"
 echo "log dir:   $LOG_DIR"
 
+HTTP_PID=""
+
 # --- 1. Deps --------------------------------------------------------------
 command -v xvfb-run >/dev/null || {
   echo "FAIL: xvfb-run not installed (sudo pacman -S xorg-server-xvfb)"
@@ -29,6 +31,7 @@ command -v xvfb-run >/dev/null || {
 }
 command -v cargo >/dev/null || { echo "FAIL: cargo missing"; exit 2; }
 command -v sed >/dev/null || { echo "FAIL: sed missing"; exit 2; }
+command -v python3 >/dev/null || { echo "FAIL: python3 missing"; exit 2; }
 
 # --- 2. Build -------------------------------------------------------------
 if [ "$PROFILE" = "release" ]; then
@@ -133,6 +136,11 @@ cleanup() {
   local rc=$?
   echo
   echo "-- cleanup (rc=$rc) --"
+  if [ -n "${HTTP_PID:-}" ] && kill -0 "$HTTP_PID" 2>/dev/null; then
+    kill "$HTTP_PID" 2>/dev/null || true
+    sleep 1
+    kill -9 "$HTTP_PID" 2>/dev/null || true
+  fi
   if kill -0 "$HOST_PID" 2>/dev/null; then
     kill "$HOST_PID" 2>/dev/null || true
     sleep 1
@@ -356,6 +364,7 @@ echo "stage 7: OK (self-split command ran with fresh LIMUX_* env)"
 echo
 echo "== stage 8: browser bridge open/wait/snapshot/find/action/screenshot =="
 BROWSER_SMOKE_HTML="$DEMO_DIR/browser-smoke.html"
+BROWSER_SECOND_HTML="$DEMO_DIR/browser-second.html"
 BROWSER_SHOT="$DEMO_DIR/browser-smoke.png"
 cat > "$BROWSER_SMOKE_HTML" <<'BROWSER_SMOKE'
 <!doctype html>
@@ -370,12 +379,61 @@ cat > "$BROWSER_SMOKE_HTML" <<'BROWSER_SMOKE'
       <button id="ready" aria-label="Smoke Ready" type="button">Ready</button>
       <label for="name">Name</label>
       <input id="name" placeholder="name">
+      <iframe id="child-frame" title="Smoke Frame" srcdoc="<!doctype html><html><body><h2>Frame Area</h2><button id='frame-ready' aria-label='Frame Ready' type='button'>Frame Ready</button></body></html>"></iframe>
     </main>
   </body>
 </html>
 BROWSER_SMOKE
+cat > "$BROWSER_SECOND_HTML" <<'BROWSER_SECOND'
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Limux Browser Second</title>
+  </head>
+  <body>
+    <h1 id="second-ready">Second Tab Ready</h1>
+  </body>
+</html>
+BROWSER_SECOND
 
-"$LIMUX_CLI" --id-format both --json browser open "file://$BROWSER_SMOKE_HTML" \
+HTTP_PORT_FILE="$DEMO_DIR/http-port"
+python3 - "$DEMO_DIR" "$HTTP_PORT_FILE" >"$LOG_DIR/http.stdout" 2>"$LOG_DIR/http.stderr" <<'PY_HTTP' &
+import functools
+import http.server
+import socketserver
+import sys
+
+root = sys.argv[1]
+port_file = sys.argv[2]
+
+class SmokeServer(socketserver.TCPServer):
+    allow_reuse_address = True
+
+handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=root)
+with SmokeServer(("127.0.0.1", 0), handler) as httpd:
+    with open(port_file, "w", encoding="utf-8") as handle:
+        handle.write(str(httpd.server_address[1]))
+    httpd.serve_forever()
+PY_HTTP
+HTTP_PID=$!
+for _ in $(seq 1 50); do
+  if [ -s "$HTTP_PORT_FILE" ]; then
+    break
+  fi
+  if ! kill -0 "$HTTP_PID" 2>/dev/null; then
+    echo "FAIL: browser fixture HTTP server exited early"
+    cat "$LOG_DIR/http.stderr" 2>/dev/null || true
+    exit 1
+  fi
+  sleep 0.1
+done
+[ -s "$HTTP_PORT_FILE" ] || { echo "FAIL: browser fixture HTTP server did not report a port"; exit 1; }
+HTTP_PORT="$(cat "$HTTP_PORT_FILE")"
+BROWSER_SMOKE_URL="http://127.0.0.1:$HTTP_PORT/browser-smoke.html"
+BROWSER_SECOND_URL="http://127.0.0.1:$HTTP_PORT/browser-second.html"
+
+"$LIMUX_CLI" --id-format both --json browser open "$BROWSER_SMOKE_URL" \
   2>&1 | tee "$LOG_DIR/stage8-open.json"
 BROWSER_SURFACE="$(sed -n 's/.*"surface_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$LOG_DIR/stage8-open.json" | head -1)"
 [ -n "$BROWSER_SURFACE" ] || { echo "FAIL: browser open did not return surface_id"; exit 1; }
@@ -414,10 +472,84 @@ grep -q '"ok"[[:space:]]*:[[:space:]]*true' "$LOG_DIR/stage8-fill.json" \
 grep -q '"value"[[:space:]]*:[[:space:]]*"smoke"' "$LOG_DIR/stage8-value.json" \
   || { echo "FAIL: browser get value did not return filled text"; exit 1; }
 
+"$LIMUX_CLI" --json browser "$BROWSER_SURFACE" eval "({title: document.title, ready: !!document.querySelector('#ready')})" \
+  2>&1 | tee "$LOG_DIR/stage8-eval.json"
+grep -q '"title"[[:space:]]*:[[:space:]]*"Limux Browser Smoke"' "$LOG_DIR/stage8-eval.json" \
+  || { echo "FAIL: browser eval did not return page title"; exit 1; }
+grep -q '"ready"[[:space:]]*:[[:space:]]*true' "$LOG_DIR/stage8-eval.json" \
+  || { echo "FAIL: browser eval did not return ready=true"; exit 1; }
+
+"$LIMUX_CLI" --json browser "$BROWSER_SURFACE" storage local set smoke-key smoke-value \
+  2>&1 | tee "$LOG_DIR/stage8-storage-set.json"
+grep -q '"ok"[[:space:]]*:[[:space:]]*true' "$LOG_DIR/stage8-storage-set.json" \
+  || { echo "FAIL: browser storage set did not report ok=true"; exit 1; }
+"$LIMUX_CLI" --json browser "$BROWSER_SURFACE" storage local get smoke-key \
+  2>&1 | tee "$LOG_DIR/stage8-storage-get.json"
+grep -q '"value"[[:space:]]*:[[:space:]]*"smoke-value"' "$LOG_DIR/stage8-storage-get.json" \
+  || { echo "FAIL: browser storage get did not return smoke-value"; exit 1; }
+"$LIMUX_CLI" --json browser "$BROWSER_SURFACE" storage local clear smoke-key \
+  2>&1 | tee "$LOG_DIR/stage8-storage-clear.json"
+grep -q '"ok"[[:space:]]*:[[:space:]]*true' "$LOG_DIR/stage8-storage-clear.json" \
+  || { echo "FAIL: browser storage clear did not report ok=true"; exit 1; }
+"$LIMUX_CLI" --json browser "$BROWSER_SURFACE" storage local get smoke-key \
+  2>&1 | tee "$LOG_DIR/stage8-storage-after-clear.json"
+grep -q '"value"[[:space:]]*:[[:space:]]*null' "$LOG_DIR/stage8-storage-after-clear.json" \
+  || { echo "FAIL: browser storage clear did not remove smoke-key"; exit 1; }
+
+"$LIMUX_CLI" --json browser "$BROWSER_SURFACE" frame "#child-frame" \
+  2>&1 | tee "$LOG_DIR/stage8-frame-select.json"
+grep -q '"ok"[[:space:]]*:[[:space:]]*true' "$LOG_DIR/stage8-frame-select.json" \
+  || { echo "FAIL: browser frame select did not report ok=true"; exit 1; }
+grep -q '"frame_id"[[:space:]]*:[[:space:]]*"#child-frame"' "$LOG_DIR/stage8-frame-select.json" \
+  || { echo "FAIL: browser frame select missing frame_id"; exit 1; }
+"$LIMUX_CLI" --json browser "$BROWSER_SURFACE" snapshot \
+  2>&1 | tee "$LOG_DIR/stage8-frame-snapshot.json"
+grep -q 'Frame Ready' "$LOG_DIR/stage8-frame-snapshot.json" \
+  || { echo "FAIL: browser frame snapshot missing frame content"; exit 1; }
+grep -q '"frame_selector"[[:space:]]*:[[:space:]]*"#child-frame"' "$LOG_DIR/stage8-frame-snapshot.json" \
+  || { echo "FAIL: browser frame snapshot missing frame selector metadata"; exit 1; }
+"$LIMUX_CLI" --json browser "$BROWSER_SURFACE" find text "Frame Ready" \
+  2>&1 | tee "$LOG_DIR/stage8-frame-find.json"
+FRAME_REF="$(sed -n 's/.*"element_ref"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$LOG_DIR/stage8-frame-find.json" | head -1)"
+[ -n "$FRAME_REF" ] || { echo "FAIL: browser frame find did not return element_ref"; exit 1; }
+"$LIMUX_CLI" --json browser "$BROWSER_SURFACE" click "$FRAME_REF" \
+  2>&1 | tee "$LOG_DIR/stage8-frame-click.json"
+grep -q '"ok"[[:space:]]*:[[:space:]]*true' "$LOG_DIR/stage8-frame-click.json" \
+  || { echo "FAIL: browser frame click did not report ok=true"; exit 1; }
+"$LIMUX_CLI" --json browser "$BROWSER_SURFACE" frame main \
+  2>&1 | tee "$LOG_DIR/stage8-frame-main.json"
+grep -q '"frame_id"[[:space:]]*:[[:space:]]*"main"' "$LOG_DIR/stage8-frame-main.json" \
+  || { echo "FAIL: browser frame main did not return to main frame"; exit 1; }
+
+"$LIMUX_CLI" --id-format both --json browser "$BROWSER_SURFACE" tab list \
+  2>&1 | tee "$LOG_DIR/stage8-tab-list1.json"
+grep -q '"current_surface_id"[[:space:]]*:[[:space:]]*"' "$LOG_DIR/stage8-tab-list1.json" \
+  || { echo "FAIL: browser tab list missing current_surface_id"; exit 1; }
+"$LIMUX_CLI" --id-format both --json browser "$BROWSER_SURFACE" tab new "$BROWSER_SECOND_URL" \
+  2>&1 | tee "$LOG_DIR/stage8-tab-new.json"
+SECOND_SURFACE="$(sed -n 's/.*"surface_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$LOG_DIR/stage8-tab-new.json" | head -1)"
+[ -n "$SECOND_SURFACE" ] || { echo "FAIL: browser tab new did not return surface_id"; exit 1; }
+"$LIMUX_CLI" --json browser "$SECOND_SURFACE" wait --selector "#second-ready" --timeout-ms 5000 \
+  2>&1 | tee "$LOG_DIR/stage8-tab-wait.json"
+grep -q '"ready"[[:space:]]*:[[:space:]]*true' "$LOG_DIR/stage8-tab-wait.json" \
+  || { echo "FAIL: browser tab new page did not become ready"; exit 1; }
+"$LIMUX_CLI" --json browser "$SECOND_SURFACE" get title \
+  2>&1 | tee "$LOG_DIR/stage8-tab-title.json"
+grep -q '"title"[[:space:]]*:[[:space:]]*"Limux Browser Second"' "$LOG_DIR/stage8-tab-title.json" \
+  || { echo "FAIL: browser tab title did not match second page"; exit 1; }
+"$LIMUX_CLI" --id-format both --json browser "$BROWSER_SURFACE" tab switch "$BROWSER_SURFACE" \
+  2>&1 | tee "$LOG_DIR/stage8-tab-switch.json"
+grep -q '"surface_id"[[:space:]]*:[[:space:]]*"' "$LOG_DIR/stage8-tab-switch.json" \
+  || { echo "FAIL: browser tab switch missing surface_id"; exit 1; }
+"$LIMUX_CLI" --id-format both --json browser "$BROWSER_SURFACE" tab close "$SECOND_SURFACE" \
+  2>&1 | tee "$LOG_DIR/stage8-tab-close.json"
+grep -q '"ok"[[:space:]]*:[[:space:]]*true' "$LOG_DIR/stage8-tab-close.json" \
+  || { echo "FAIL: browser tab close did not report ok=true"; exit 1; }
+
 "$LIMUX_CLI" browser "$BROWSER_SURFACE" screenshot --out "$BROWSER_SHOT" \
   2>&1 | tee "$LOG_DIR/stage8-screenshot.txt"
 [ -s "$BROWSER_SHOT" ] || { echo "FAIL: browser screenshot did not write a non-empty PNG"; exit 1; }
-echo "stage 8: OK (browser bridge open/wait/snapshot/find/click/fill/get/screenshot)"
+echo "stage 8: OK (browser bridge open/wait/snapshot/find/click/fill/eval/storage/frame/tab/screenshot)"
 
 # --- 12. Stage 9: hook translators end-to-end -----------------------------
 echo
