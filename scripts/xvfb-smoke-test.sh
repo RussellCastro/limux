@@ -230,7 +230,7 @@ SELF_SPLIT_PROOF="$DEMO_DIR/self-split-proof"
 SELF_SPLIT_ENV="$DEMO_DIR/self-split-env"
 SELF_SPLIT_CMD="printf split-ok > '$SELF_SPLIT_PROOF'; printf '%s\n%s\n%s\n' \"\$LIMUX_WORKSPACE_ID\" \"\$LIMUX_PANE_ID\" \"\$LIMUX_SURFACE_ID\" > '$SELF_SPLIT_ENV'"
 
-"$LIMUX_CLI" --json new-pane \
+"$LIMUX_CLI" --id-format both --json new-pane \
   --workspace claude \
   --direction right \
   --command "$SELF_SPLIT_CMD" \
@@ -273,20 +273,87 @@ ENV_SURFACE="$(sed -n '3p' "$SELF_SPLIT_ENV")"
 }
 echo "stage 6: OK (self-split command ran with fresh LIMUX_* env)"
 
-# --- 10. Stage 7: hook translators end-to-end -----------------------------
+# --- 10. Stage 7: live browser bridge -------------------------------------
 echo
-echo "== stage 7: claude-hook event translation =="
+echo "== stage 7: browser bridge open/wait/snapshot/find/action/screenshot =="
+BROWSER_SMOKE_HTML="$DEMO_DIR/browser-smoke.html"
+BROWSER_SHOT="$DEMO_DIR/browser-smoke.png"
+cat > "$BROWSER_SMOKE_HTML" <<'BROWSER_SMOKE'
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Limux Browser Smoke</title>
+  </head>
+  <body>
+    <main>
+      <h1>Limux Browser Smoke</h1>
+      <button id="ready" aria-label="Smoke Ready" type="button">Ready</button>
+      <label for="name">Name</label>
+      <input id="name" placeholder="name">
+    </main>
+  </body>
+</html>
+BROWSER_SMOKE
+
+"$LIMUX_CLI" --id-format both --json browser open "file://$BROWSER_SMOKE_HTML" \
+  2>&1 | tee "$LOG_DIR/stage7-open.json"
+BROWSER_SURFACE="$(sed -n 's/.*"surface_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$LOG_DIR/stage7-open.json" | head -1)"
+[ -n "$BROWSER_SURFACE" ] || { echo "FAIL: browser open did not return surface_id"; exit 1; }
+
+"$LIMUX_CLI" --json browser "$BROWSER_SURFACE" wait --selector "#ready" --timeout-ms 5000 \
+  2>&1 | tee "$LOG_DIR/stage7-wait.json"
+grep -q '"ready"[[:space:]]*:[[:space:]]*true' "$LOG_DIR/stage7-wait.json" \
+  || { echo "FAIL: browser wait did not report ready=true"; exit 1; }
+
+"$LIMUX_CLI" --json browser "$BROWSER_SURFACE" snapshot \
+  2>&1 | tee "$LOG_DIR/stage7-snapshot1.json"
+grep -q "Limux Browser Smoke" "$LOG_DIR/stage7-snapshot1.json" \
+  || { echo "FAIL: browser snapshot missing page title/text"; exit 1; }
+grep -q '"frame_id"[[:space:]]*:[[:space:]]*"main"' "$LOG_DIR/stage7-snapshot1.json" \
+  || { echo "FAIL: browser snapshot missing main frame metadata"; exit 1; }
+grep -q '"element_ref"[[:space:]]*:[[:space:]]*"@e' "$LOG_DIR/stage7-snapshot1.json" \
+  || { echo "FAIL: browser snapshot missing stable element refs"; exit 1; }
+
+"$LIMUX_CLI" --json browser "$BROWSER_SURFACE" find text Ready \
+  2>&1 | tee "$LOG_DIR/stage7-find.json"
+READY_REF="$(sed -n 's/.*"element_ref"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$LOG_DIR/stage7-find.json" | head -1)"
+[ -n "$READY_REF" ] || { echo "FAIL: browser find text Ready did not return element_ref"; exit 1; }
+
+"$LIMUX_CLI" --json browser "$BROWSER_SURFACE" click "$READY_REF" \
+  2>&1 | tee "$LOG_DIR/stage7-click.json"
+grep -q '"ok"[[:space:]]*:[[:space:]]*true' "$LOG_DIR/stage7-click.json" \
+  || { echo "FAIL: browser click did not report ok=true"; exit 1; }
+
+"$LIMUX_CLI" --json browser "$BROWSER_SURFACE" fill "#name" smoke \
+  2>&1 | tee "$LOG_DIR/stage7-fill.json"
+grep -q '"ok"[[:space:]]*:[[:space:]]*true' "$LOG_DIR/stage7-fill.json" \
+  || { echo "FAIL: browser fill did not report ok=true"; exit 1; }
+
+"$LIMUX_CLI" --json browser "$BROWSER_SURFACE" get value "#name" \
+  2>&1 | tee "$LOG_DIR/stage7-value.json"
+grep -q '"value"[[:space:]]*:[[:space:]]*"smoke"' "$LOG_DIR/stage7-value.json" \
+  || { echo "FAIL: browser get value did not return filled text"; exit 1; }
+
+"$LIMUX_CLI" browser "$BROWSER_SURFACE" screenshot --out "$BROWSER_SHOT" \
+  2>&1 | tee "$LOG_DIR/stage7-screenshot.txt"
+[ -s "$BROWSER_SHOT" ] || { echo "FAIL: browser screenshot did not write a non-empty PNG"; exit 1; }
+echo "stage 7: OK (browser bridge open/wait/snapshot/find/click/fill/get/screenshot)"
+
+# --- 11. Stage 8: hook translators end-to-end -----------------------------
+echo
+echo "== stage 8: claude-hook event translation =="
 if echo '{"hook_event_name":"Notification","message":"hello from smoke"}' \
   | LIMUX_WORKSPACE_ID="" "$LIMUX_CLI" claude-hook 2>&1 \
-  | tee "$LOG_DIR/stage7.txt"; then
-  echo "stage 7: OK (claude-hook accepted JSON on stdin)"
+  | tee "$LOG_DIR/stage8.txt"; then
+  echo "stage 8: OK (claude-hook accepted JSON on stdin)"
 else
   # claude-hook legitimately errors without a workspace target — that's
   # a pass-through error, not a bridge regression. Surface the output.
-  echo "stage 7: claude-hook returned non-zero (check output)"
+  echo "stage 8: claude-hook returned non-zero (check output)"
 fi
 
 echo
 echo "===================================="
-echo "✅ limux agent-integrations smoke test PASSED"
+echo "✅ limux agent/browser smoke test PASSED"
 echo "===================================="
