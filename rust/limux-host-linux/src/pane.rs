@@ -244,7 +244,8 @@ fn parse_browser_wait_value(
 }
 
 #[cfg(feature = "webkit")]
-type BrowserResultCallback = Rc<RefCell<Option<Box<dyn FnOnce(Result<serde_json::Value, String>)>>>>;
+type BrowserResultCallback =
+    Rc<RefCell<Option<Box<dyn FnOnce(Result<serde_json::Value, String>)>>>>;
 
 #[cfg(feature = "webkit")]
 #[derive(Clone)]
@@ -409,8 +410,7 @@ fn browser_eval_script(script: &str) -> String {
 fn browser_ref_key(raw: &str) -> Option<String> {
     let value = raw.trim().trim_start_matches('@');
     let rest = value.strip_prefix('e')?;
-    (!rest.is_empty() && rest.chars().all(|ch| ch.is_ascii_digit()))
-        .then(|| value.to_string())
+    (!rest.is_empty() && rest.chars().all(|ch| ch.is_ascii_digit())).then(|| value.to_string())
 }
 
 #[cfg(feature = "webkit")]
@@ -439,12 +439,9 @@ fn remember_snapshot_refs(
         let raw_key = raw_key.trim().trim_start_matches('@').to_string();
         let stable_key = if selector == "document" {
             "e1".to_string()
-        } else if let Some(existing) = stored
-            .iter()
-            .find_map(|(key, stored_selector)| {
-                (stored_selector.as_str() == selector).then(|| key.clone())
-            })
-        {
+        } else if let Some(existing) = stored.iter().find_map(|(key, stored_selector)| {
+            (stored_selector.as_str() == selector).then(|| key.clone())
+        }) {
             existing
         } else {
             let index = next_ref.get().max(2);
@@ -474,9 +471,15 @@ fn remember_snapshot_refs(
             }
             rewritten_refs.insert(stable_key, entry);
         }
-        map.insert("refs".to_string(), serde_json::Value::Object(rewritten_refs));
+        map.insert(
+            "refs".to_string(),
+            serde_json::Value::Object(rewritten_refs),
+        );
 
-        if let Some(nodes) = map.get_mut("nodes").and_then(serde_json::Value::as_array_mut) {
+        if let Some(nodes) = map
+            .get_mut("nodes")
+            .and_then(serde_json::Value::as_array_mut)
+        {
             for node in nodes {
                 let raw_ref = node
                     .get("ref")
@@ -510,10 +513,8 @@ fn remember_snapshot_refs(
             let mut pairs = key_map.into_iter().collect::<Vec<_>>();
             pairs.sort_by_key(|(raw_key, _)| std::cmp::Reverse(raw_key.len()));
             for (raw_key, stable_key) in pairs {
-                snapshot = snapshot.replace(
-                    &format!("ref={raw_key} "),
-                    &format!("ref={stable_key} "),
-                );
+                snapshot =
+                    snapshot.replace(&format!("ref={raw_key} "), &format!("ref={stable_key} "));
             }
             map.insert("snapshot".to_string(), serde_json::Value::String(snapshot));
         }
@@ -556,7 +557,9 @@ fn resolve_browser_selector(
         return Ok(selector.to_string());
     };
     refs.borrow().get(&key).cloned().ok_or_else(|| {
-        format!("browser element ref not found: {selector}; run browser.snapshot or browser.find first")
+        format!(
+            "browser element ref not found: {selector}; run browser.snapshot or browser.find first"
+        )
     })
 }
 
@@ -875,7 +878,9 @@ fn browser_wait_script(condition: &BrowserWaitCondition) -> String {
         None => "null".to_string(),
     };
     let load_state = match condition.load_state.as_deref() {
-        Some(load_state) => serde_json::to_string(load_state).unwrap_or_else(|_| "null".to_string()),
+        Some(load_state) => {
+            serde_json::to_string(load_state).unwrap_or_else(|_| "null".to_string())
+        }
         None => "null".to_string(),
     };
     let url_contains = match condition.url_contains.as_deref() {
@@ -944,7 +949,6 @@ fn browser_wait_script(condition: &BrowserWaitCondition) -> String {
 "#
     )
 }
-
 
 #[cfg(feature = "webkit")]
 fn browser_data_script(
@@ -1314,7 +1318,9 @@ fn sync_pane_attention_from_tabs(internals: &PaneInternals) {
     if pane_has_tab_attention(internals) {
         internals.pane_outer.add_css_class("limux-pane-attention");
     } else {
-        internals.pane_outer.remove_css_class("limux-pane-attention");
+        internals
+            .pane_outer
+            .remove_css_class("limux-pane-attention");
     }
 }
 
@@ -4550,7 +4556,9 @@ fn browser_cookie_import_bool(value: &serde_json::Value, keys: &[&str]) -> bool 
         .find_map(|key| value.get(*key))
         .and_then(|value| {
             value.as_bool().or_else(|| {
-                value.as_str().map(|raw| raw.eq_ignore_ascii_case("true") || raw == "1")
+                value
+                    .as_str()
+                    .map(|raw| raw.eq_ignore_ascii_case("true") || raw == "1")
             })
         })
         .unwrap_or(false)
@@ -4577,14 +4585,17 @@ fn browser_cookie_import_max_age(value: &serde_json::Value) -> Result<i32, &'sta
             Ok(max_age.min(i32::MAX as i64) as i32)
         };
     }
-    let Some(expires_unix) = browser_cookie_import_i64(value, &[
-        "expires_unix",
-        "expires",
-        "expiry",
-        "expiration",
-        "expirationDate",
-        "expiration_date",
-    ]) else {
+    let Some(expires_unix) = browser_cookie_import_i64(
+        value,
+        &[
+            "expires_unix",
+            "expires",
+            "expiry",
+            "expiration",
+            "expirationDate",
+            "expiration_date",
+        ],
+    ) else {
         return Ok(-1);
     };
     if expires_unix <= 0 {
@@ -4673,13 +4684,10 @@ impl BrowserHandles {
     }
 
     fn current_uri(&self) -> Option<String> {
-        self.webview
-            .uri()
-            .map(|uri| uri.to_string())
-            .or_else(|| {
-                let text = self.url_entry.text().to_string();
-                (!text.trim().is_empty()).then_some(text)
-            })
+        self.webview.uri().map(|uri| uri.to_string()).or_else(|| {
+            let text = self.url_entry.text().to_string();
+            (!text.trim().is_empty()).then_some(text)
+        })
     }
 
     fn title(&self) -> Option<String> {
@@ -4745,15 +4753,16 @@ impl BrowserHandles {
         let automation_refs = self.automation_refs.clone();
         let automation_ref_next = self.automation_ref_next.clone();
         self.evaluate_javascript(browser_frame_select_script(&selector), move |result| {
-            let result = parse_browser_json_value("browser.frame.select", result).map(|mut value| {
-                *selected_frame_selector.borrow_mut() = Some(selector.clone());
-                automation_refs.borrow_mut().clear();
-                automation_ref_next.set(2);
-                if let Some(map) = value.as_object_mut() {
-                    map.insert("ok".to_string(), serde_json::Value::Bool(true));
-                }
-                value
-            });
+            let result =
+                parse_browser_json_value("browser.frame.select", result).map(|mut value| {
+                    *selected_frame_selector.borrow_mut() = Some(selector.clone());
+                    automation_refs.borrow_mut().clear();
+                    automation_ref_next.set(2);
+                    if let Some(map) = value.as_object_mut() {
+                        map.insert("ok".to_string(), serde_json::Value::Bool(true));
+                    }
+                    value
+                });
             on_result(result);
         });
     }
@@ -4763,9 +4772,10 @@ impl BrowserHandles {
         script: String,
         on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
     ) {
-        self.evaluate_javascript(self.scoped_script(browser_eval_script(&script)), move |result| {
-            parse_browser_json_result("browser.eval", result, on_result)
-        });
+        self.evaluate_javascript(
+            self.scoped_script(browser_eval_script(&script)),
+            move |result| parse_browser_json_result("browser.eval", result, on_result),
+        );
     }
 
     fn snapshot(&self, on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static) {
@@ -4775,13 +4785,13 @@ impl BrowserHandles {
         self.evaluate_javascript(
             self.scoped_script(BROWSER_SNAPSHOT_SCRIPT.to_string()),
             move |result| {
-            let result = parse_browser_json_value("browser.snapshot", result).map(|value| {
-                let mut value = remember_snapshot_refs(&refs, &next_ref, value);
-                insert_browser_frame_metadata(&mut value, frame_selector.as_deref());
-                value
-            });
-            on_result(result);
-        },
+                let result = parse_browser_json_value("browser.snapshot", result).map(|value| {
+                    let mut value = remember_snapshot_refs(&refs, &next_ref, value);
+                    insert_browser_frame_metadata(&mut value, frame_selector.as_deref());
+                    value
+                });
+                on_result(result);
+            },
         );
     }
 
@@ -4830,9 +4840,10 @@ impl BrowserHandles {
                 return;
             }
         };
-        self.evaluate_javascript(self.scoped_script(browser_click_script(&selector)), move |result| {
-            parse_browser_json_result("browser.click", result, on_result)
-        });
+        self.evaluate_javascript(
+            self.scoped_script(browser_click_script(&selector)),
+            move |result| parse_browser_json_result("browser.click", result, on_result),
+        );
     }
 
     fn fill(
@@ -4848,9 +4859,10 @@ impl BrowserHandles {
                 return;
             }
         };
-        self.evaluate_javascript(self.scoped_script(browser_fill_script(&selector, &text)), move |result| {
-            parse_browser_json_result("browser.fill", result, on_result)
-        });
+        self.evaluate_javascript(
+            self.scoped_script(browser_fill_script(&selector, &text)),
+            move |result| parse_browser_json_result("browser.fill", result, on_result),
+        );
     }
 
     fn find(
@@ -4892,7 +4904,11 @@ impl BrowserHandles {
             None => None,
         };
         self.evaluate_javascript(
-            self.scoped_script(browser_get_script(&kind, selector.as_deref(), name.as_deref())),
+            self.scoped_script(browser_get_script(
+                &kind,
+                selector.as_deref(),
+                name.as_deref(),
+            )),
             move |result| parse_browser_json_result("browser.get", result, on_result),
         );
     }
@@ -4930,58 +4946,66 @@ impl BrowserHandles {
         Self::browser_wait_poll(self.clone(), condition, started_at, deadline, on_result);
     }
 
-#[cfg(feature = "webkit")]
-fn browser_wait_poll(
-    handles: BrowserHandles,
-    condition: BrowserWaitCondition,
-    started_at: std::time::Instant,
-    deadline: std::time::Instant,
-    on_result: BrowserResultCallback,
-) {
-    handles.evaluate_javascript(handles.scoped_script(browser_wait_script(&condition)), move |result| {
-        let now = std::time::Instant::now();
-        match parse_browser_wait_value(result) {
-            Ok(mut value) => {
-                let ready = value
-                    .get("ready")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false);
-                if let Some(map) = value.as_object_mut() {
-                    map.insert(
+    #[cfg(feature = "webkit")]
+    fn browser_wait_poll(
+        handles: BrowserHandles,
+        condition: BrowserWaitCondition,
+        started_at: std::time::Instant,
+        deadline: std::time::Instant,
+        on_result: BrowserResultCallback,
+    ) {
+        handles.evaluate_javascript(
+            handles.scoped_script(browser_wait_script(&condition)),
+            move |result| {
+                let now = std::time::Instant::now();
+                match parse_browser_wait_value(result) {
+                    Ok(mut value) => {
+                        let ready = value
+                            .get("ready")
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(false);
+                        if let Some(map) = value.as_object_mut() {
+                            map.insert(
                         "elapsed_ms".to_string(),
                         serde_json::json!(now.duration_since(started_at).as_millis() as u64),
                     );
-                    map.insert(
-                        "timeout_ms".to_string(),
-                        serde_json::json!(deadline.duration_since(started_at).as_millis() as u64),
-                    );
-                }
-                if ready {
-                    finish_browser_result(&on_result, Ok(value));
-                } else if now >= deadline {
-                    finish_browser_result(&on_result, Err("wait condition not met".to_string()));
-                } else {
-                    let next_handles = handles.clone();
-                    let next_condition = condition.clone();
-                    let next_on_result = on_result.clone();
-                    glib::timeout_add_local_once(
-                        std::time::Duration::from_millis(BROWSER_WAIT_POLL_INTERVAL_MS),
-                        move || {
-                            Self::browser_wait_poll(
-                                next_handles,
-                                next_condition,
-                                started_at,
-                                deadline,
-                                next_on_result,
+                            map.insert(
+                                "timeout_ms".to_string(),
+                                serde_json::json!(
+                                    deadline.duration_since(started_at).as_millis() as u64
+                                ),
                             );
-                        },
-                    );
+                        }
+                        if ready {
+                            finish_browser_result(&on_result, Ok(value));
+                        } else if now >= deadline {
+                            finish_browser_result(
+                                &on_result,
+                                Err("wait condition not met".to_string()),
+                            );
+                        } else {
+                            let next_handles = handles.clone();
+                            let next_condition = condition.clone();
+                            let next_on_result = on_result.clone();
+                            glib::timeout_add_local_once(
+                                std::time::Duration::from_millis(BROWSER_WAIT_POLL_INTERVAL_MS),
+                                move || {
+                                    Self::browser_wait_poll(
+                                        next_handles,
+                                        next_condition,
+                                        started_at,
+                                        deadline,
+                                        next_on_result,
+                                    );
+                                },
+                            );
+                        }
+                    }
+                    Err(error) => finish_browser_result(&on_result, Err(error)),
                 }
-            }
-            Err(error) => finish_browser_result(&on_result, Err(error)),
-        }
-    });
-}
+            },
+        );
+    }
 
     fn action(
         &self,
@@ -5031,14 +5055,18 @@ fn browser_wait_poll(
         let network_session = match self.webview.network_session() {
             Some(network_session) => network_session,
             None => {
-                on_result(Err("browser surface has no WebKit network session".to_string()));
+                on_result(Err(
+                    "browser surface has no WebKit network session".to_string()
+                ));
                 return;
             }
         };
         let cookie_manager = match network_session.cookie_manager() {
             Some(cookie_manager) => cookie_manager,
             None => {
-                on_result(Err("browser surface has no WebKit cookie manager".to_string()));
+                on_result(Err(
+                    "browser surface has no WebKit cookie manager".to_string()
+                ));
                 return;
             }
         };
@@ -5078,8 +5106,8 @@ fn browser_wait_poll(
                 }));
                 continue;
             };
-            let path = browser_cookie_import_string(row, &["path"])
-                .unwrap_or_else(|| "/".to_string());
+            let path =
+                browser_cookie_import_string(row, &["path"]).unwrap_or_else(|| "/".to_string());
             let secure = browser_cookie_import_bool(row, &["secure"]);
             let http_only = browser_cookie_import_bool(row, &["httpOnly", "http_only"]);
             let max_age = match browser_cookie_import_max_age(row) {
@@ -5327,7 +5355,9 @@ impl BrowserHandles {
         _selector: String,
         on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
     ) {
-        on_result(Err("browser.frame.select requires WebKit support".to_string()));
+        on_result(Err(
+            "browser.frame.select requires WebKit support".to_string()
+        ));
     }
 
     fn evaluate_user_script(
@@ -5410,7 +5440,9 @@ impl BrowserHandles {
         _dy: Option<u64>,
         on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
     ) {
-        on_result(Err("browser action commands require WebKit support".to_string()));
+        on_result(Err(
+            "browser action commands require WebKit support".to_string()
+        ));
     }
 
     fn import_cookies(
@@ -5418,7 +5450,9 @@ impl BrowserHandles {
         _cookies: serde_json::Value,
         on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
     ) {
-        on_result(Err("browser cookie import requires WebKit support".to_string()));
+        on_result(Err(
+            "browser cookie import requires WebKit support".to_string()
+        ));
     }
 
     fn data(
@@ -5430,7 +5464,9 @@ impl BrowserHandles {
         _storage_type: Option<String>,
         on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
     ) {
-        on_result(Err("browser data commands require WebKit support".to_string()));
+        on_result(Err(
+            "browser data commands require WebKit support".to_string()
+        ));
     }
 
     fn focus_location(&self) -> bool {
@@ -5605,8 +5641,8 @@ fn create_browser_widget(
     use webkit6::prelude::*;
 
     // Use a NetworkSession to avoid sandbox issues
-    let network_session = webkit6::NetworkSession::default()
-        .unwrap_or_else(webkit6::NetworkSession::new_ephemeral);
+    let network_session =
+        webkit6::NetworkSession::default().unwrap_or_else(webkit6::NetworkSession::new_ephemeral);
     let user_content_manager = webkit6::UserContentManager::new();
     let dom_editable = Rc::new(Cell::new(false));
     let _ = user_content_manager

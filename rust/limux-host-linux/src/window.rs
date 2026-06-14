@@ -412,10 +412,7 @@ fn ss_line_pids(line: &str) -> Vec<u32> {
     let mut pids = Vec::new();
     while let Some(offset) = cursor.find("pid=") {
         let after = &cursor[offset + 4..];
-        let digits: String = after
-            .chars()
-            .take_while(|ch| ch.is_ascii_digit())
-            .collect();
+        let digits: String = after.chars().take_while(|ch| ch.is_ascii_digit()).collect();
         if let Ok(pid) = digits.parse::<u32>() {
             if !pids.contains(&pid) {
                 pids.push(pid);
@@ -730,7 +727,10 @@ fn browser_tab_row(surface: pane::SurfaceSummary) -> serde_json::Value {
         "title".to_string(),
         serde_json::Value::String(surface.title.clone()),
     );
-    row.insert("selected".to_string(), serde_json::Value::Bool(surface.selected));
+    row.insert(
+        "selected".to_string(),
+        serde_json::Value::Bool(surface.selected),
+    );
     if let Some(uri) = surface.uri.filter(|uri| !uri.is_empty()) {
         row.insert("url".to_string(), serde_json::Value::String(uri.clone()));
         row.insert("uri".to_string(), serde_json::Value::String(uri));
@@ -831,7 +831,10 @@ fn browser_control_payload(
         }
     }
     payload.insert("url".to_string(), serde_json::Value::String(url.clone()));
-    payload.insert("title".to_string(), serde_json::Value::String(title.clone()));
+    payload.insert(
+        "title".to_string(),
+        serde_json::Value::String(title.clone()),
+    );
     payload.insert(
         "browser".to_string(),
         serde_json::json!({
@@ -3485,6 +3488,7 @@ fn open_notification_panel(state: &State) -> bool {
         let list = list.clone();
         let empty_label = empty_label.clone();
         let clear_all_button = clear_all_button.clone();
+        let clear_all_button_for_refresh = clear_all_button.clone();
         let window = window.clone();
         clear_all_button.connect_clicked(move |_| {
             clear_live_notifications(&state, None);
@@ -3492,18 +3496,19 @@ fn open_notification_panel(state: &State) -> bool {
                 &state,
                 &list,
                 &empty_label,
-                &clear_all_button,
+                &clear_all_button_for_refresh,
                 &window,
             );
         });
     }
     {
         let window = window.clone();
+        let window_for_escape = window.clone();
         let key_controller = gtk::EventControllerKey::new();
         key_controller.set_propagation_phase(gtk::PropagationPhase::Capture);
         key_controller.connect_key_pressed(move |_, keyval, _, _| {
             if keyval == gtk::gdk::Key::Escape {
-                window.close();
+                window_for_escape.close();
                 gtk::glib::Propagation::Stop
             } else {
                 gtk::glib::Propagation::Proceed
@@ -3674,8 +3679,15 @@ fn notification_panel_title(notification: &LiveNotification) -> String {
 }
 
 fn notification_panel_detail(notification: &LiveNotification, workspace_name: &str) -> String {
-    let status = if notification.unread { "Unread" } else { "Read" };
-    let target = match (notification.target.pane_id, notification.target.tab_id.as_deref()) {
+    let status = if notification.unread {
+        "Unread"
+    } else {
+        "Read"
+    };
+    let target = match (
+        notification.target.pane_id,
+        notification.target.tab_id.as_deref(),
+    ) {
         (Some(pane_id), Some(tab_id)) => format!("pane {pane_id}, tab {tab_id}"),
         (Some(pane_id), None) => format!("pane {pane_id}"),
         _ => "workspace".to_string(),
@@ -3688,8 +3700,7 @@ fn notification_panel_body(notification: &LiveNotification) -> Option<String> {
         Some(notification.body.clone())
     } else if !notification.subtitle.trim().is_empty() {
         Some(notification.subtitle.clone())
-    } else if notification.message != notification.title
-        && !notification.message.trim().is_empty()
+    } else if notification.message != notification.title && !notification.message.trim().is_empty()
     {
         Some(notification.message.clone())
     } else {
@@ -3811,11 +3822,12 @@ fn open_command_palette(state: &State) -> bool {
 
     {
         let window = window.clone();
+        let window_for_escape = window.clone();
         let key_controller = gtk::EventControllerKey::new();
         key_controller.set_propagation_phase(gtk::PropagationPhase::Capture);
         key_controller.connect_key_pressed(move |_, keyval, _, _| {
             if keyval == gtk::gdk::Key::Escape {
-                window.close();
+                window_for_escape.close();
                 gtk::glib::Propagation::Stop
             } else {
                 gtk::glib::Propagation::Proceed
@@ -3864,8 +3876,8 @@ impl CommandPaletteEntry {
         hint: Option<String>,
         action: CommandPaletteAction,
     ) -> Self {
-        let search_text = format!("{title}\n{detail}\n{}", hint.as_deref().unwrap_or(""))
-            .to_ascii_lowercase();
+        let search_text =
+            format!("{title}\n{detail}\n{}", hint.as_deref().unwrap_or("")).to_ascii_lowercase();
         Self {
             title,
             detail,
@@ -3954,7 +3966,10 @@ fn refresh_command_palette_rows(
 
     let mut actions = visible_actions.borrow_mut();
     actions.clear();
-    for entry in entries.iter().filter(|entry| command_palette_entry_matches(entry, query)) {
+    for entry in entries
+        .iter()
+        .filter(|entry| command_palette_entry_matches(entry, query))
+    {
         let row = gtk::ListBoxRow::new();
         row.set_activatable(true);
         row.add_css_class("limux-command-palette-row");
@@ -5268,11 +5283,12 @@ fn handle_control_command(state: &State, command: ControlCommand) {
 
             let cwd = {
                 let app_state = state.borrow();
-                app_state.workspaces[index]
+                let cwd = app_state.workspaces[index]
                     .cwd
                     .borrow()
                     .clone()
-                    .filter(|cwd| !cwd.trim().is_empty())
+                    .filter(|cwd| !cwd.trim().is_empty());
+                cwd
             };
             let git_branch = cwd.as_deref().and_then(git_branch_for_cwd);
             let linked_pr = cwd.as_deref().and_then(linked_pr_for_cwd);
@@ -5560,9 +5576,8 @@ fn handle_control_command(state: &State, command: ControlCommand) {
             let target = {
                 let app_state = state.borrow();
                 let workspace = &app_state.workspaces[index];
-                pane::browser_handle_for_root(&workspace.root, surface_hint.as_deref()).map(
-                    |(surface_id, handle)| (workspace.id.clone(), surface_id, handle),
-                )
+                pane::browser_handle_for_root(&workspace.root, surface_hint.as_deref())
+                    .map(|(surface_id, handle)| (workspace.id.clone(), surface_id, handle))
             };
 
             let Some((workspace_id, surface_id, handle)) = target else {
@@ -5606,9 +5621,8 @@ fn handle_control_command(state: &State, command: ControlCommand) {
             let target = {
                 let app_state = state.borrow();
                 let workspace = &app_state.workspaces[index];
-                pane::browser_handle_for_root(&workspace.root, surface_hint.as_deref()).map(
-                    |(surface_id, handle)| (workspace.id.clone(), surface_id, handle),
-                )
+                pane::browser_handle_for_root(&workspace.root, surface_hint.as_deref())
+                    .map(|(surface_id, handle)| (workspace.id.clone(), surface_id, handle))
             };
 
             let Some((workspace_id, surface_id, handle)) = target else {
@@ -5671,9 +5685,8 @@ fn handle_control_command(state: &State, command: ControlCommand) {
             let target = {
                 let app_state = state.borrow();
                 let workspace = &app_state.workspaces[index];
-                pane::browser_handle_for_root(&workspace.root, surface_hint.as_deref()).map(
-                    |(surface_id, handle)| (workspace.id.clone(), surface_id, handle),
-                )
+                pane::browser_handle_for_root(&workspace.root, surface_hint.as_deref())
+                    .map(|(surface_id, handle)| (workspace.id.clone(), surface_id, handle))
             };
 
             let Some((workspace_id, surface_id, handle)) = target else {
@@ -5706,9 +5719,8 @@ fn handle_control_command(state: &State, command: ControlCommand) {
             let target = {
                 let app_state = state.borrow();
                 let workspace = &app_state.workspaces[index];
-                pane::browser_handle_for_root(&workspace.root, surface_hint.as_deref()).map(
-                    |(surface_id, handle)| (workspace.id.clone(), surface_id, handle),
-                )
+                pane::browser_handle_for_root(&workspace.root, surface_hint.as_deref())
+                    .map(|(surface_id, handle)| (workspace.id.clone(), surface_id, handle))
             };
 
             let Some((workspace_id, surface_id, handle)) = target else {
@@ -5793,9 +5805,10 @@ fn handle_control_command(state: &State, command: ControlCommand) {
                 }
                 "switch" => {
                     let Some(target_surface_id) = target_surface_id else {
-                        let _ = reply.send(Err(crate::control_bridge::BridgeError::invalid_params(
-                            "browser.tab.switch requires target_surface_id",
-                        )));
+                        let _ =
+                            reply.send(Err(crate::control_bridge::BridgeError::invalid_params(
+                                "browser.tab.switch requires target_surface_id",
+                            )));
                         return;
                     };
                     let Some(surface) =
@@ -5810,9 +5823,10 @@ fn handle_control_command(state: &State, command: ControlCommand) {
                 }
                 "close" => {
                     let Some(target_surface_id) = target_surface_id else {
-                        let _ = reply.send(Err(crate::control_bridge::BridgeError::invalid_params(
-                            "browser.tab.close requires target_surface_id",
-                        )));
+                        let _ =
+                            reply.send(Err(crate::control_bridge::BridgeError::invalid_params(
+                                "browser.tab.close requires target_surface_id",
+                            )));
                         return;
                     };
                     match pane::close_browser_tab_in_root(&workspace_root, &target_surface_id) {
@@ -5861,9 +5875,8 @@ fn handle_control_command(state: &State, command: ControlCommand) {
             let target = {
                 let app_state = state.borrow();
                 let workspace = &app_state.workspaces[index];
-                pane::browser_handle_for_root(&workspace.root, surface_hint.as_deref()).map(
-                    |(surface_id, handle)| (workspace.id.clone(), surface_id, handle),
-                )
+                pane::browser_handle_for_root(&workspace.root, surface_hint.as_deref())
+                    .map(|(surface_id, handle)| (workspace.id.clone(), surface_id, handle))
             };
 
             let Some((workspace_id, surface_id, handle)) = target else {
@@ -5887,9 +5900,9 @@ fn handle_control_command(state: &State, command: ControlCommand) {
                     let _ = reply.send(Ok(payload));
                 }
                 Err(error) => {
-                    let _ = reply.send(Err(crate::control_bridge::BridgeError::internal(
-                        format!("browser.get failed: {error}"),
-                    )));
+                    let _ = reply.send(Err(crate::control_bridge::BridgeError::internal(format!(
+                        "browser.get failed: {error}"
+                    ))));
                 }
             });
         }
@@ -5919,9 +5932,8 @@ fn handle_control_command(state: &State, command: ControlCommand) {
             let target = {
                 let app_state = state.borrow();
                 let workspace = &app_state.workspaces[index];
-                pane::browser_handle_for_root(&workspace.root, surface_hint.as_deref()).map(
-                    |(surface_id, handle)| (workspace.id.clone(), surface_id, handle),
-                )
+                pane::browser_handle_for_root(&workspace.root, surface_hint.as_deref())
+                    .map(|(surface_id, handle)| (workspace.id.clone(), surface_id, handle))
             };
 
             let Some((workspace_id, surface_id, handle)) = target else {
@@ -5981,9 +5993,8 @@ fn handle_control_command(state: &State, command: ControlCommand) {
             let target = {
                 let app_state = state.borrow();
                 let workspace = &app_state.workspaces[index];
-                pane::browser_handle_for_root(&workspace.root, surface_hint.as_deref()).map(
-                    |(surface_id, handle)| (workspace.id.clone(), surface_id, handle),
-                )
+                pane::browser_handle_for_root(&workspace.root, surface_hint.as_deref())
+                    .map(|(surface_id, handle)| (workspace.id.clone(), surface_id, handle))
             };
 
             let Some((workspace_id, surface_id, handle)) = target else {
@@ -6017,9 +6028,9 @@ fn handle_control_command(state: &State, command: ControlCommand) {
                     let _ = reply.send(Ok(payload));
                 }
                 Err(error) => {
-                    let _ = reply.send(Err(crate::control_bridge::BridgeError::internal(
-                        format!("browser.eval failed: {error}"),
-                    )));
+                    let _ = reply.send(Err(crate::control_bridge::BridgeError::internal(format!(
+                        "browser.eval failed: {error}"
+                    ))));
                 }
             });
         }
@@ -6045,9 +6056,8 @@ fn handle_control_command(state: &State, command: ControlCommand) {
             let target = {
                 let app_state = state.borrow();
                 let workspace = &app_state.workspaces[index];
-                pane::browser_handle_for_root(&workspace.root, surface_hint.as_deref()).map(
-                    |(surface_id, handle)| (workspace.id.clone(), surface_id, handle),
-                )
+                pane::browser_handle_for_root(&workspace.root, surface_hint.as_deref())
+                    .map(|(surface_id, handle)| (workspace.id.clone(), surface_id, handle))
             };
 
             let Some((workspace_id, surface_id, handle)) = target else {
@@ -6072,9 +6082,10 @@ fn handle_control_command(state: &State, command: ControlCommand) {
                 }
                 "select" => {
                     let Some(selector) = selector else {
-                        let _ = reply.send(Err(crate::control_bridge::BridgeError::invalid_params(
-                            "browser.frame.select requires selector",
-                        )));
+                        let _ =
+                            reply.send(Err(crate::control_bridge::BridgeError::invalid_params(
+                                "browser.frame.select requires selector",
+                            )));
                         return;
                     };
                     let payload = browser_control_payload(&workspace_id, &surface_id, &handle);
@@ -6129,9 +6140,8 @@ fn handle_control_command(state: &State, command: ControlCommand) {
             let target = {
                 let app_state = state.borrow();
                 let workspace = &app_state.workspaces[index];
-                pane::browser_handle_for_root(&workspace.root, surface_hint.as_deref()).map(
-                    |(surface_id, handle)| (workspace.id.clone(), surface_id, handle),
-                )
+                pane::browser_handle_for_root(&workspace.root, surface_hint.as_deref())
+                    .map(|(surface_id, handle)| (workspace.id.clone(), surface_id, handle))
             };
 
             let Some((workspace_id, surface_id, handle)) = target else {
@@ -6156,9 +6166,9 @@ fn handle_control_command(state: &State, command: ControlCommand) {
                     let _ = reply.send(Ok(payload));
                 }
                 Err(error) => {
-                    let _ = reply.send(Err(crate::control_bridge::BridgeError::internal(
-                        format!("browser.snapshot failed: {error}"),
-                    )));
+                    let _ = reply.send(Err(crate::control_bridge::BridgeError::internal(format!(
+                        "browser.snapshot failed: {error}"
+                    ))));
                 }
             });
         }
@@ -6183,9 +6193,8 @@ fn handle_control_command(state: &State, command: ControlCommand) {
             let target = {
                 let app_state = state.borrow();
                 let workspace = &app_state.workspaces[index];
-                pane::browser_handle_for_root(&workspace.root, surface_hint.as_deref()).map(
-                    |(surface_id, handle)| (workspace.id.clone(), surface_id, handle),
-                )
+                pane::browser_handle_for_root(&workspace.root, surface_hint.as_deref())
+                    .map(|(surface_id, handle)| (workspace.id.clone(), surface_id, handle))
             };
 
             let Some((workspace_id, surface_id, handle)) = target else {
@@ -6211,9 +6220,9 @@ fn handle_control_command(state: &State, command: ControlCommand) {
                     let _ = reply.send(Ok(payload));
                 }
                 Err(error) => {
-                    let _ = reply.send(Err(crate::control_bridge::BridgeError::internal(
-                        format!("browser.screenshot failed: {error}"),
-                    )));
+                    let _ = reply.send(Err(crate::control_bridge::BridgeError::internal(format!(
+                        "browser.screenshot failed: {error}"
+                    ))));
                 }
             });
         }
@@ -6240,9 +6249,8 @@ fn handle_control_command(state: &State, command: ControlCommand) {
             let target = {
                 let app_state = state.borrow();
                 let workspace = &app_state.workspaces[index_workspace];
-                pane::browser_handle_for_root(&workspace.root, surface_hint.as_deref()).map(
-                    |(surface_id, handle)| (workspace.id.clone(), surface_id, handle),
-                )
+                pane::browser_handle_for_root(&workspace.root, surface_hint.as_deref())
+                    .map(|(surface_id, handle)| (workspace.id.clone(), surface_id, handle))
             };
 
             let Some((workspace_id, surface_id, handle)) = target else {
@@ -6266,9 +6274,9 @@ fn handle_control_command(state: &State, command: ControlCommand) {
                     let _ = reply.send(Ok(payload));
                 }
                 Err(error) => {
-                    let _ = reply.send(Err(crate::control_bridge::BridgeError::internal(
-                        format!("browser.find failed: {error}"),
-                    )));
+                    let _ = reply.send(Err(crate::control_bridge::BridgeError::internal(format!(
+                        "browser.find failed: {error}"
+                    ))));
                 }
             });
         }
@@ -6293,9 +6301,8 @@ fn handle_control_command(state: &State, command: ControlCommand) {
             let target = {
                 let app_state = state.borrow();
                 let workspace = &app_state.workspaces[index];
-                pane::browser_handle_for_root(&workspace.root, surface_hint.as_deref()).map(
-                    |(surface_id, handle)| (workspace.id.clone(), surface_id, handle),
-                )
+                pane::browser_handle_for_root(&workspace.root, surface_hint.as_deref())
+                    .map(|(surface_id, handle)| (workspace.id.clone(), surface_id, handle))
             };
 
             let Some((workspace_id, surface_id, handle)) = target else {
@@ -6319,9 +6326,9 @@ fn handle_control_command(state: &State, command: ControlCommand) {
                     let _ = reply.send(Ok(payload));
                 }
                 Err(error) => {
-                    let _ = reply.send(Err(crate::control_bridge::BridgeError::internal(
-                        format!("browser.click failed: {error}"),
-                    )));
+                    let _ = reply.send(Err(crate::control_bridge::BridgeError::internal(format!(
+                        "browser.click failed: {error}"
+                    ))));
                 }
             });
         }
@@ -6351,9 +6358,8 @@ fn handle_control_command(state: &State, command: ControlCommand) {
             let target = {
                 let app_state = state.borrow();
                 let workspace = &app_state.workspaces[index];
-                pane::browser_handle_for_root(&workspace.root, surface_hint.as_deref()).map(
-                    |(surface_id, handle)| (workspace.id.clone(), surface_id, handle),
-                )
+                pane::browser_handle_for_root(&workspace.root, surface_hint.as_deref())
+                    .map(|(surface_id, handle)| (workspace.id.clone(), surface_id, handle))
             };
 
             let Some((workspace_id, surface_id, handle)) = target else {
@@ -6364,24 +6370,32 @@ fn handle_control_command(state: &State, command: ControlCommand) {
             };
 
             let payload = browser_control_payload(&workspace_id, &surface_id, &handle);
-            handle.action(action, selector, text, value, key, dy, move |result| match result {
-                Ok(action_result) => {
-                    let mut payload = payload;
-                    if let (Some(payload_map), Some(action_map)) =
-                        (payload.as_object_mut(), action_result.as_object())
-                    {
-                        for (key, value) in action_map {
-                            payload_map.insert(key.clone(), value.clone());
+            handle.action(
+                action,
+                selector,
+                text,
+                value,
+                key,
+                dy,
+                move |result| match result {
+                    Ok(action_result) => {
+                        let mut payload = payload;
+                        if let (Some(payload_map), Some(action_map)) =
+                            (payload.as_object_mut(), action_result.as_object())
+                        {
+                            for (key, value) in action_map {
+                                payload_map.insert(key.clone(), value.clone());
+                            }
                         }
+                        let _ = reply.send(Ok(payload));
                     }
-                    let _ = reply.send(Ok(payload));
-                }
-                Err(error) => {
-                    let _ = reply.send(Err(crate::control_bridge::BridgeError::internal(
-                        format!("browser action failed: {error}"),
-                    )));
-                }
-            });
+                    Err(error) => {
+                        let _ = reply.send(Err(crate::control_bridge::BridgeError::internal(
+                            format!("browser action failed: {error}"),
+                        )));
+                    }
+                },
+            );
         }
         ControlCommand::BrowserData {
             target,
@@ -6409,9 +6423,8 @@ fn handle_control_command(state: &State, command: ControlCommand) {
             let target = {
                 let app_state = state.borrow();
                 let workspace = &app_state.workspaces[index];
-                pane::browser_handle_for_root(&workspace.root, surface_hint.as_deref()).map(
-                    |(surface_id, handle)| (workspace.id.clone(), surface_id, handle),
-                )
+                pane::browser_handle_for_root(&workspace.root, surface_hint.as_deref())
+                    .map(|(surface_id, handle)| (workspace.id.clone(), surface_id, handle))
             };
 
             let Some((workspace_id, surface_id, handle)) = target else {
@@ -6435,9 +6448,9 @@ fn handle_control_command(state: &State, command: ControlCommand) {
                     let _ = reply.send(Ok(payload));
                 }
                 Err(error) => {
-                    let _ = reply.send(Err(crate::control_bridge::BridgeError::internal(
-                        format!("browser data command failed: {error}"),
-                    )));
+                    let _ = reply.send(Err(crate::control_bridge::BridgeError::internal(format!(
+                        "browser data command failed: {error}"
+                    ))));
                 }
             };
             if action == "cookies.import" {
@@ -6468,9 +6481,8 @@ fn handle_control_command(state: &State, command: ControlCommand) {
             let target = {
                 let app_state = state.borrow();
                 let workspace = &app_state.workspaces[index];
-                pane::browser_handle_for_root(&workspace.root, surface_hint.as_deref()).map(
-                    |(surface_id, handle)| (workspace.id.clone(), surface_id, handle),
-                )
+                pane::browser_handle_for_root(&workspace.root, surface_hint.as_deref())
+                    .map(|(surface_id, handle)| (workspace.id.clone(), surface_id, handle))
             };
 
             let Some((workspace_id, surface_id, handle)) = target else {
@@ -6494,9 +6506,9 @@ fn handle_control_command(state: &State, command: ControlCommand) {
                     let _ = reply.send(Ok(payload));
                 }
                 Err(error) => {
-                    let _ = reply.send(Err(crate::control_bridge::BridgeError::internal(
-                        format!("browser.fill failed: {error}"),
-                    )));
+                    let _ = reply.send(Err(crate::control_bridge::BridgeError::internal(format!(
+                        "browser.fill failed: {error}"
+                    ))));
                 }
             });
         }
@@ -8236,10 +8248,7 @@ fn clear_live_notifications(state: &State, id: Option<u64>) -> serde_json::Value
             .retain(|notification| notification.id != id);
         for target in cleared_targets {
             clear_pane_attention_if_no_unread_target(&app_state, &target);
-            clear_workspace_unread_if_no_unread_notification(
-                &mut app_state,
-                &target.workspace_id,
-            );
+            clear_workspace_unread_if_no_unread_notification(&mut app_state, &target.workspace_id);
         }
     } else {
         let cleared_targets = app_state
@@ -8335,10 +8344,7 @@ fn clear_pane_attention_for_target(target: &DesktopNotificationTarget) {
     }
 }
 
-fn clear_pane_attention_if_no_unread_target(
-    state: &AppState,
-    target: &DesktopNotificationTarget,
-) {
+fn clear_pane_attention_if_no_unread_target(state: &AppState, target: &DesktopNotificationTarget) {
     let Some(pane_id) = target.pane_id else {
         return;
     };
@@ -8355,8 +8361,12 @@ fn clear_pane_attention_if_no_unread_target(
 fn clear_workspace_unread_visuals(workspace: &mut Workspace) {
     workspace.unread = false;
     workspace.notify_dot.remove_css_class("limux-notify-dot");
-    workspace.notify_dot.add_css_class("limux-notify-dot-hidden");
-    workspace.notify_label.remove_css_class("limux-notify-msg-unread");
+    workspace
+        .notify_dot
+        .add_css_class("limux-notify-dot-hidden");
+    workspace
+        .notify_label
+        .remove_css_class("limux-notify-msg-unread");
     workspace.notify_label.add_css_class("limux-notify-msg");
     workspace.notify_label.set_visible(false);
     if let Some(row_box) = workspace.sidebar_row.child() {
@@ -8426,7 +8436,11 @@ fn mark_workspace_unread_with_message(
     let active_idx = s.active_idx;
     let window_active = s.window.is_active();
     let notifications = s.config.borrow().notifications;
-    let Some(idx) = s.workspaces.iter().position(|workspace| workspace.id == ws_id) else {
+    let Some(idx) = s
+        .workspaces
+        .iter()
+        .position(|workspace| workspace.id == ws_id)
+    else {
         return None;
     };
 
@@ -8564,24 +8578,23 @@ mod tests {
     use super::gtk::gdk;
     use super::ToVariant;
     use super::{
-        build_window_css, clamp_workspace_insert_index_for_pinning,
+        browser_screenshot_path, build_window_css, clamp_workspace_insert_index_for_pinning,
         desktop_notification_action_from_signal, desktop_notification_actions,
         desktop_notification_activation_token_from_signal,
         desktop_notification_closed_id_from_signal, desktop_notification_id_from_response,
         directional_neighbor_score, favorites_prefix_len, font_size_after_delta,
-        ghostty_prefers_dark, gtk_system_prefers_dark_from_raw, next_active_workspace_index,
-        pane_create_split_placement, queue_session_save_request, resolve_pane_create_source_id,
-        resolved_system_prefers_dark, sanitize_background_opacity,
+        ghostty_prefers_dark, gtk_system_prefers_dark_from_raw, live_notification_row,
+        live_notifications_payload, next_active_workspace_index, pane_create_split_placement,
+        pr_status_for_linked_pr, queue_session_save_request, resolve_pane_create_source_id,
+        resolved_system_prefers_dark, sanitize_background_opacity, select_live_notification,
         shortcut_allowed_while_browser_find_active, shortcut_blocked_by_editable,
-        pr_status_for_linked_pr, shortcut_command_from_key_event, shortcut_dispatch_propagation,
+        shortcut_command_from_key_event, shortcut_dispatch_propagation,
         should_emit_desktop_notification, sidebar_metadata_text, socket_address_port,
         ss_line_listening_port, ss_line_pids, ss_line_process_name, tab_drag_workspace_seed,
-        use_opaque_window_background,
-        validate_workspace_folder_input_with_dirs, workspace_drop_layout_path,
-        workspace_folder_path_from_input, workspace_notification_message, browser_screenshot_path,
-        live_notification_row, live_notifications_payload, select_live_notification, Direction,
-        LiveNotification,
-        EditableCaptureContext, NeighborScore, PaneBounds, PaneCreateDirection,
+        use_opaque_window_background, validate_workspace_folder_input_with_dirs,
+        workspace_drop_layout_path, workspace_folder_path_from_input,
+        workspace_notification_message, DesktopNotificationTarget, Direction,
+        EditableCaptureContext, LiveNotification, NeighborScore, PaneBounds, PaneCreateDirection,
         PaneCreateTargetError, PortalColorSchemePreference, SessionSaveAccess, SessionSaveRequest,
         WorkspaceSeedSource, BASE_CSS, HOST_ENTRY_CSS_CLASS, WORKSPACE_RENAME_ENTRY_CSS_CLASS,
         WORKSPACE_RENAME_ENTRY_CSS_CLASSES,
@@ -8872,16 +8885,21 @@ mod tests {
         ];
 
         let unread = live_notifications_payload(&rows, true);
-        assert_eq!(
-            unread["notifications"].as_array().expect("rows").len(),
-            1
-        );
+        assert_eq!(unread["notifications"].as_array().expect("rows").len(), 1);
         let row = live_notification_row(&rows[0]);
         assert_eq!(row["workspace_ref"], "workspace:workspace-a");
         assert_eq!(row["pane_ref"], "pane:4");
         assert_eq!(row["surface_ref"], "surface:4:tab-a");
-        assert_eq!(select_live_notification(&rows, None).expect("selected").id, 1);
-        assert_eq!(select_live_notification(&rows, Some(2)).expect("selected").id, 2);
+        assert_eq!(
+            select_live_notification(&rows, None).expect("selected").id,
+            1
+        );
+        assert_eq!(
+            select_live_notification(&rows, Some(2))
+                .expect("selected")
+                .id,
+            2
+        );
 
         let read_rows = rows
             .iter()

@@ -93,8 +93,8 @@ fn parse_project_command_entry(
         .or_else(|| name_hint.and_then(nonempty_trimmed))
         .or_else(|| json_string_for_keys(map, &["label", "title"]))
         .ok_or_else(|| "project command object is missing a name or id".to_string())?;
-    let label = json_string_for_keys(map, &["label", "title", "name"])
-        .unwrap_or_else(|| name.clone());
+    let label =
+        json_string_for_keys(map, &["label", "title", "name"]).unwrap_or_else(|| name.clone());
     let cwd = json_string_for_keys(map, &["cwd", "working_directory", "workingDir"]);
 
     Ok(ProjectCommandDefinition {
@@ -132,12 +132,19 @@ pub fn parse_project_commands_from_value(
         }
         Value::Array(items) => {
             for (index, value) in items.iter().enumerate() {
-                parsed.push(parse_project_command_entry(None, value, source).map_err(|err| {
-                    format!("invalid project command at commands[{index}]: {err}")
-                })?);
+                parsed.push(
+                    parse_project_command_entry(None, value, source).map_err(|err| {
+                        format!("invalid project command at commands[{index}]: {err}")
+                    })?,
+                );
             }
         }
-        _ => return Err(format!("{} commands must be an object or array", source.display())),
+        _ => {
+            return Err(format!(
+                "{} commands must be an object or array",
+                source.display()
+            ))
+        }
     }
     Ok(parsed)
 }
@@ -146,7 +153,10 @@ pub fn load_project_commands_from_path(
     path: &Path,
 ) -> Result<Vec<ProjectCommandDefinition>, String> {
     let raw = fs::read_to_string(path).map_err(|err| {
-        format!("failed to read project command config {}: {err}", path.display())
+        format!(
+            "failed to read project command config {}: {err}",
+            path.display()
+        )
     })?;
     let value: Value = serde_json::from_str(&raw).map_err(|err| {
         format!(
@@ -252,7 +262,11 @@ mod tests {
         let root = dir.path();
         let nested = root.join("a/b");
         std::fs::create_dir_all(&nested).unwrap();
-        std::fs::write(root.join("cmux.json"), r#"{"commands":{"root":"echo root"}}"#).unwrap();
+        std::fs::write(
+            root.join("cmux.json"),
+            r#"{"commands":{"root":"echo root"}}"#,
+        )
+        .unwrap();
         std::fs::write(
             nested.join("limux.json"),
             r#"{"commands":{"nested":"echo nested"}}"#,

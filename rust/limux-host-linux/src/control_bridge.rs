@@ -677,6 +677,28 @@ fn parse_optional_workspace_target(
     Ok(WorkspaceTarget::Active)
 }
 
+fn parse_optional_explicit_workspace_target(
+    params: &Map<String, Value>,
+    allow_name: bool,
+) -> Result<WorkspaceTarget, BridgeError> {
+    if let Some(handle) = optional_handle(params, &["workspace_id", "workspace_ref", "workspace"])?
+    {
+        if allow_name && !looks_like_workspace_handle(&handle) {
+            return Ok(WorkspaceTarget::Name(handle));
+        }
+        return Ok(WorkspaceTarget::Handle(handle));
+    }
+    if allow_name {
+        if let Some(name) = optional_string(params, &["workspace_name"]) {
+            return Ok(WorkspaceTarget::Name(name));
+        }
+    }
+    if let Some(index) = optional_index(params, "workspace_index")? {
+        return Ok(WorkspaceTarget::Index(index));
+    }
+    Ok(WorkspaceTarget::Active)
+}
+
 #[cfg_attr(not(test), allow(dead_code))]
 fn parse_create_pane_request(
     params: &Map<String, Value>,
@@ -819,7 +841,7 @@ fn handle_method(
             (ControlCommand::CreatePane { request, reply }, rx)
         }
         "browser.open_split" => {
-            let target = match parse_optional_workspace_target(params, true) {
+            let target = match parse_optional_explicit_workspace_target(params, true) {
                 Ok(target) => target,
                 Err(error) => return error_response(id, error),
             };
@@ -846,15 +868,15 @@ fn handle_method(
                     BridgeError::invalid_params("browser.navigate requires url"),
                 );
             };
-            let target = match parse_optional_workspace_target(params, true) {
+            let target = match parse_optional_explicit_workspace_target(params, true) {
                 Ok(target) => target,
                 Err(error) => return error_response(id, error),
             };
-            let surface_hint =
-                match optional_ref_handle(params, &["surface_id", "id"], "surface:") {
-                    Ok(surface_hint) => surface_hint,
-                    Err(error) => return error_response(id, error),
-                };
+            let surface_hint = match optional_ref_handle(params, &["surface_id", "id"], "surface:")
+            {
+                Ok(surface_hint) => surface_hint,
+                Err(error) => return error_response(id, error),
+            };
             let (reply, rx) = mpsc::channel();
             (
                 ControlCommand::BrowserNavigate {
@@ -871,15 +893,15 @@ fn handle_method(
         | "browser.reload"
         | "browser.focus_webview"
         | "browser.is_webview_focused" => {
-            let target = match parse_optional_workspace_target(params, true) {
+            let target = match parse_optional_explicit_workspace_target(params, true) {
                 Ok(target) => target,
                 Err(error) => return error_response(id, error),
             };
-            let surface_hint =
-                match optional_ref_handle(params, &["surface_id", "id"], "surface:") {
-                    Ok(surface_hint) => surface_hint,
-                    Err(error) => return error_response(id, error),
-                };
+            let surface_hint = match optional_ref_handle(params, &["surface_id", "id"], "surface:")
+            {
+                Ok(surface_hint) => surface_hint,
+                Err(error) => return error_response(id, error),
+            };
             let (reply, rx) = mpsc::channel();
             (
                 ControlCommand::BrowserControlAction {
@@ -892,15 +914,15 @@ fn handle_method(
             )
         }
         "browser.url.get" => {
-            let target = match parse_optional_workspace_target(params, true) {
+            let target = match parse_optional_explicit_workspace_target(params, true) {
                 Ok(target) => target,
                 Err(error) => return error_response(id, error),
             };
-            let surface_hint =
-                match optional_ref_handle(params, &["surface_id", "id"], "surface:") {
-                    Ok(surface_hint) => surface_hint,
-                    Err(error) => return error_response(id, error),
-                };
+            let surface_hint = match optional_ref_handle(params, &["surface_id", "id"], "surface:")
+            {
+                Ok(surface_hint) => surface_hint,
+                Err(error) => return error_response(id, error),
+            };
             let (reply, rx) = mpsc::channel();
             (
                 ControlCommand::BrowserUrlGet {
@@ -912,15 +934,15 @@ fn handle_method(
             )
         }
         "browser.get.title" => {
-            let target = match parse_optional_workspace_target(params, true) {
+            let target = match parse_optional_explicit_workspace_target(params, true) {
                 Ok(target) => target,
                 Err(error) => return error_response(id, error),
             };
-            let surface_hint =
-                match optional_ref_handle(params, &["surface_id", "id"], "surface:") {
-                    Ok(surface_hint) => surface_hint,
-                    Err(error) => return error_response(id, error),
-                };
+            let surface_hint = match optional_ref_handle(params, &["surface_id", "id"], "surface:")
+            {
+                Ok(surface_hint) => surface_hint,
+                Err(error) => return error_response(id, error),
+            };
             let (reply, rx) = mpsc::channel();
             (
                 ControlCommand::BrowserTitleGet {
@@ -933,15 +955,15 @@ fn handle_method(
         }
         method if method.starts_with("browser.get.") => {
             let kind = method.trim_start_matches("browser.get.").trim().to_string();
-            let target = match parse_optional_workspace_target(params, true) {
+            let target = match parse_optional_explicit_workspace_target(params, true) {
                 Ok(target) => target,
                 Err(error) => return error_response(id, error),
             };
-            let surface_hint =
-                match optional_ref_handle(params, &["surface_id", "id"], "surface:") {
-                    Ok(surface_hint) => surface_hint,
-                    Err(error) => return error_response(id, error),
-                };
+            let surface_hint = match optional_ref_handle(params, &["surface_id", "id"], "surface:")
+            {
+                Ok(surface_hint) => surface_hint,
+                Err(error) => return error_response(id, error),
+            };
             let selector = optional_string(params, &["selector"]);
             let name = optional_string(params, &["name", "property"]);
             let (reply, rx) = mpsc::channel();
@@ -958,15 +980,15 @@ fn handle_method(
             )
         }
         "browser.wait" => {
-            let target = match parse_optional_workspace_target(params, true) {
+            let target = match parse_optional_explicit_workspace_target(params, true) {
                 Ok(target) => target,
                 Err(error) => return error_response(id, error),
             };
-            let surface_hint =
-                match optional_ref_handle(params, &["surface_id", "id"], "surface:") {
-                    Ok(surface_hint) => surface_hint,
-                    Err(error) => return error_response(id, error),
-                };
+            let surface_hint = match optional_ref_handle(params, &["surface_id", "id"], "surface:")
+            {
+                Ok(surface_hint) => surface_hint,
+                Err(error) => return error_response(id, error),
+            };
             let selector = optional_string(params, &["selector"]);
             let timeout_ms = match optional_u64(params, &["timeout_ms", "timeout"]) {
                 Ok(timeout_ms) => timeout_ms.map(|ms| ms.min(BROWSER_WAIT_MAX_TIMEOUT_MS)),
@@ -995,15 +1017,15 @@ fn handle_method(
                     BridgeError::invalid_params("browser.eval requires script"),
                 );
             };
-            let target = match parse_optional_workspace_target(params, true) {
+            let target = match parse_optional_explicit_workspace_target(params, true) {
                 Ok(target) => target,
                 Err(error) => return error_response(id, error),
             };
-            let surface_hint =
-                match optional_ref_handle(params, &["surface_id", "id"], "surface:") {
-                    Ok(surface_hint) => surface_hint,
-                    Err(error) => return error_response(id, error),
-                };
+            let surface_hint = match optional_ref_handle(params, &["surface_id", "id"], "surface:")
+            {
+                Ok(surface_hint) => surface_hint,
+                Err(error) => return error_response(id, error),
+            };
             let (reply, rx) = mpsc::channel();
             (
                 ControlCommand::BrowserEval {
@@ -1017,15 +1039,15 @@ fn handle_method(
         }
         "browser.frame.main" | "browser.frame.select" => {
             let action = method.trim_start_matches("browser.frame.").to_string();
-            let target = match parse_optional_workspace_target(params, true) {
+            let target = match parse_optional_explicit_workspace_target(params, true) {
                 Ok(target) => target,
                 Err(error) => return error_response(id, error),
             };
-            let surface_hint =
-                match optional_ref_handle(params, &["surface_id", "id"], "surface:") {
-                    Ok(surface_hint) => surface_hint,
-                    Err(error) => return error_response(id, error),
-                };
+            let surface_hint = match optional_ref_handle(params, &["surface_id", "id"], "surface:")
+            {
+                Ok(surface_hint) => surface_hint,
+                Err(error) => return error_response(id, error),
+            };
             let selector = optional_string(params, &["selector", "frame_id"]);
             if action == "select" && selector.is_none() {
                 return error_response(
@@ -1046,15 +1068,15 @@ fn handle_method(
             )
         }
         "browser.snapshot" => {
-            let target = match parse_optional_workspace_target(params, true) {
+            let target = match parse_optional_explicit_workspace_target(params, true) {
                 Ok(target) => target,
                 Err(error) => return error_response(id, error),
             };
-            let surface_hint =
-                match optional_ref_handle(params, &["surface_id", "id"], "surface:") {
-                    Ok(surface_hint) => surface_hint,
-                    Err(error) => return error_response(id, error),
-                };
+            let surface_hint = match optional_ref_handle(params, &["surface_id", "id"], "surface:")
+            {
+                Ok(surface_hint) => surface_hint,
+                Err(error) => return error_response(id, error),
+            };
             let (reply, rx) = mpsc::channel();
             (
                 ControlCommand::BrowserSnapshot {
@@ -1066,15 +1088,15 @@ fn handle_method(
             )
         }
         "browser.screenshot" => {
-            let target = match parse_optional_workspace_target(params, true) {
+            let target = match parse_optional_explicit_workspace_target(params, true) {
                 Ok(target) => target,
                 Err(error) => return error_response(id, error),
             };
-            let surface_hint =
-                match optional_ref_handle(params, &["surface_id", "id"], "surface:") {
-                    Ok(surface_hint) => surface_hint,
-                    Err(error) => return error_response(id, error),
-                };
+            let surface_hint = match optional_ref_handle(params, &["surface_id", "id"], "surface:")
+            {
+                Ok(surface_hint) => surface_hint,
+                Err(error) => return error_response(id, error),
+            };
             let (reply, rx) = mpsc::channel();
             (
                 ControlCommand::BrowserScreenshot {
@@ -1104,15 +1126,15 @@ fn handle_method(
                     )),
                 );
             };
-            let target = match parse_optional_workspace_target(params, true) {
+            let target = match parse_optional_explicit_workspace_target(params, true) {
                 Ok(target) => target,
                 Err(error) => return error_response(id, error),
             };
-            let surface_hint =
-                match optional_ref_handle(params, &["surface_id", "id"], "surface:") {
-                    Ok(surface_hint) => surface_hint,
-                    Err(error) => return error_response(id, error),
-                };
+            let surface_hint = match optional_ref_handle(params, &["surface_id", "id"], "surface:")
+            {
+                Ok(surface_hint) => surface_hint,
+                Err(error) => return error_response(id, error),
+            };
             let index = match optional_index(params, "index") {
                 Ok(index) => index,
                 Err(error) => return error_response(id, error),
@@ -1137,15 +1159,15 @@ fn handle_method(
                     BridgeError::invalid_params("browser.click requires selector"),
                 );
             };
-            let target = match parse_optional_workspace_target(params, true) {
+            let target = match parse_optional_explicit_workspace_target(params, true) {
                 Ok(target) => target,
                 Err(error) => return error_response(id, error),
             };
-            let surface_hint =
-                match optional_ref_handle(params, &["surface_id", "id"], "surface:") {
-                    Ok(surface_hint) => surface_hint,
-                    Err(error) => return error_response(id, error),
-                };
+            let surface_hint = match optional_ref_handle(params, &["surface_id", "id"], "surface:")
+            {
+                Ok(surface_hint) => surface_hint,
+                Err(error) => return error_response(id, error),
+            };
             let (reply, rx) = mpsc::channel();
             (
                 ControlCommand::BrowserClick {
@@ -1164,15 +1186,15 @@ fn handle_method(
                     BridgeError::invalid_params("browser.fill requires selector"),
                 );
             };
-            let target = match parse_optional_workspace_target(params, true) {
+            let target = match parse_optional_explicit_workspace_target(params, true) {
                 Ok(target) => target,
                 Err(error) => return error_response(id, error),
             };
-            let surface_hint =
-                match optional_ref_handle(params, &["surface_id", "id"], "surface:") {
-                    Ok(surface_hint) => surface_hint,
-                    Err(error) => return error_response(id, error),
-                };
+            let surface_hint = match optional_ref_handle(params, &["surface_id", "id"], "surface:")
+            {
+                Ok(surface_hint) => surface_hint,
+                Err(error) => return error_response(id, error),
+            };
             let text = optional_raw_string(params, &["value", "text"]).unwrap_or_default();
             let (reply, rx) = mpsc::channel();
             (
@@ -1229,7 +1251,10 @@ fn handle_method(
                 );
             }
             if action == "type" && text.is_none() {
-                return error_response(id, BridgeError::invalid_params("browser.type requires text"));
+                return error_response(
+                    id,
+                    BridgeError::invalid_params("browser.type requires text"),
+                );
             }
             if action == "select" && value.is_none() {
                 return error_response(
@@ -1243,15 +1268,15 @@ fn handle_method(
                     BridgeError::invalid_params(format!("browser.{action} requires key")),
                 );
             }
-            let target = match parse_optional_workspace_target(params, true) {
+            let target = match parse_optional_explicit_workspace_target(params, true) {
                 Ok(target) => target,
                 Err(error) => return error_response(id, error),
             };
-            let surface_hint =
-                match optional_ref_handle(params, &["surface_id", "id"], "surface:") {
-                    Ok(surface_hint) => surface_hint,
-                    Err(error) => return error_response(id, error),
-                };
+            let surface_hint = match optional_ref_handle(params, &["surface_id", "id"], "surface:")
+            {
+                Ok(surface_hint) => surface_hint,
+                Err(error) => return error_response(id, error),
+            };
             let (reply, rx) = mpsc::channel();
             (
                 ControlCommand::BrowserAction {
@@ -1281,9 +1306,7 @@ fn handle_method(
             let value = optional_raw_string(params, &["value"]);
             let storage_type = optional_string(params, &["type", "storage_type"]);
             let cookies = params.get("cookies").cloned();
-            if action == "cookies.import"
-                && !matches!(cookies.as_ref(), Some(Value::Array(_)))
-            {
+            if action == "cookies.import" && !matches!(cookies.as_ref(), Some(Value::Array(_))) {
                 return error_response(
                     id,
                     BridgeError::invalid_params("browser.cookies.import requires cookies[]"),
@@ -1313,15 +1336,15 @@ fn handle_method(
                     BridgeError::invalid_params("browser.storage.set requires value"),
                 );
             }
-            let target = match parse_optional_workspace_target(params, true) {
+            let target = match parse_optional_explicit_workspace_target(params, true) {
                 Ok(target) => target,
                 Err(error) => return error_response(id, error),
             };
-            let surface_hint =
-                match optional_ref_handle(params, &["surface_id", "id"], "surface:") {
-                    Ok(surface_hint) => surface_hint,
-                    Err(error) => return error_response(id, error),
-                };
+            let surface_hint = match optional_ref_handle(params, &["surface_id", "id"], "surface:")
+            {
+                Ok(surface_hint) => surface_hint,
+                Err(error) => return error_response(id, error),
+            };
             let (reply, rx) = mpsc::channel();
             (
                 ControlCommand::BrowserData {
@@ -1340,15 +1363,15 @@ fn handle_method(
         }
         "browser.tab.list" | "browser.tab.new" | "browser.tab.switch" | "browser.tab.close" => {
             let action = method.trim_start_matches("browser.tab.").to_string();
-            let target = match parse_optional_workspace_target(params, true) {
+            let target = match parse_optional_explicit_workspace_target(params, true) {
                 Ok(target) => target,
                 Err(error) => return error_response(id, error),
             };
-            let surface_hint =
-                match optional_ref_handle(params, &["surface_id", "id"], "surface:") {
-                    Ok(surface_hint) => surface_hint,
-                    Err(error) => return error_response(id, error),
-                };
+            let surface_hint = match optional_ref_handle(params, &["surface_id", "id"], "surface:")
+            {
+                Ok(surface_hint) => surface_hint,
+                Err(error) => return error_response(id, error),
+            };
             let target_surface_id = match optional_ref_handle(
                 params,
                 &["target_surface_id", "target_id", "tab_id"],
@@ -1561,10 +1584,7 @@ fn handle_method(
                 Err(error) => return error_response(id, error),
             };
             let (reply, rx) = mpsc::channel();
-            (
-                ControlCommand::ListNotifications { unread_only, reply },
-                rx,
-            )
+            (ControlCommand::ListNotifications { unread_only, reply }, rx)
         }
         "notification.clear" | "notifications.clear" | "clear-notifications" => {
             let clear_id = match optional_u64(params, &["id", "notification_id"]) {
@@ -1952,7 +1972,10 @@ mod tests {
             },
         );
         assert_eq!(back_response.error, None);
-        assert_eq!(back_response.result.expect("result")["url"], "https://example.com");
+        assert_eq!(
+            back_response.result.expect("result")["url"],
+            "https://example.com"
+        );
 
         let focused_response = dispatch_request(
             r#"{"id":2,"method":"browser.is_webview_focused","params":{"surface_id":"surface:9:tab"}}"#,
@@ -1994,7 +2017,7 @@ mod tests {
     #[test]
     fn browser_get_and_wait_routes_accept_surface_refs() {
         let get_response = dispatch_request(
-            r#"{"id":1,"method":"browser.get.attr","params":{"surface_id":"surface:9:tab","selector":"#name","name":"aria-label"}}"#,
+            r##"{"id":1,"method":"browser.get.attr","params":{"surface_id":"surface:9:tab","selector":"#name","name":"aria-label"}}"##,
             &|command| match command {
                 ControlCommand::BrowserGet {
                     target,
@@ -2018,7 +2041,7 @@ mod tests {
         assert_eq!(get_response.result.expect("result")["value"], "Name");
 
         let wait_response = dispatch_request(
-            r#"{"id":2,"method":"browser.wait","params":{"surface_id":"surface:9:tab","selector":"#ready"}}"#,
+            r##"{"id":2,"method":"browser.wait","params":{"surface_id":"surface:9:tab","selector":"#ready"}}"##,
             &|command| match command {
                 ControlCommand::BrowserWait {
                     target,
@@ -2132,7 +2155,10 @@ mod tests {
             },
         );
         assert_eq!(select_response.error, None);
-        assert_eq!(select_response.result.expect("result")["frame_id"], "iframe#app");
+        assert_eq!(
+            select_response.result.expect("result")["frame_id"],
+            "iframe#app"
+        );
 
         let main_response = dispatch_request(
             r#"{"id":3,"method":"browser.frame.main","params":{"surface_id":"surface:9:tab"}}"#,
@@ -2272,7 +2298,9 @@ mod tests {
                     assert_eq!(locator, "nth");
                     assert_eq!(value, "button");
                     assert_eq!(index, Some(2));
-                    let _ = reply.send(Ok(json!({ "element_ref": "@e2", "selector": "button:nth-of-type(3)" })));
+                    let _ = reply.send(Ok(
+                        json!({ "element_ref": "@e2", "selector": "button:nth-of-type(3)" }),
+                    ));
                 }
                 other => panic!("unexpected command: {other:?}"),
             },
@@ -2295,7 +2323,7 @@ mod tests {
         );
 
         let click_response = dispatch_request(
-            r#"{"id":2,"method":"browser.click","params":{"surface_id":"surface:9:tab","selector":"#submit"}}"#,
+            r##"{"id":2,"method":"browser.click","params":{"surface_id":"surface:9:tab","selector":"#submit"}}"##,
             &|command| match command {
                 ControlCommand::BrowserClick {
                     target,
@@ -2312,10 +2340,13 @@ mod tests {
             },
         );
         assert_eq!(click_response.error, None);
-        assert_eq!(click_response.result.expect("result")["selector"], "#submit");
+        assert_eq!(
+            click_response.result.expect("result")["selector"],
+            "#submit"
+        );
 
         let fill_response = dispatch_request(
-            r#"{"id":3,"method":"browser.fill","params":{"surface_id":"surface:9:tab","selector":"#name","text":"Ada"}}"#,
+            r##"{"id":3,"method":"browser.fill","params":{"surface_id":"surface:9:tab","selector":"#name","text":"Ada"}}"##,
             &|command| match command {
                 ControlCommand::BrowserFill {
                     target,
@@ -2328,7 +2359,9 @@ mod tests {
                     assert_eq!(surface_hint, Some("9:tab".to_string()));
                     assert_eq!(selector, "#name");
                     assert_eq!(text, "Ada");
-                    let _ = reply.send(Ok(json!({ "ok": true, "selector": selector, "value": text })));
+                    let _ = reply.send(Ok(
+                        json!({ "ok": true, "selector": selector, "value": text }),
+                    ));
                 }
                 other => panic!("unexpected command: {other:?}"),
             },
@@ -2340,7 +2373,7 @@ mod tests {
     #[test]
     fn browser_action_routes_require_required_fields_and_accept_surface_refs() {
         let missing_text = dispatch_request(
-            r#"{"id":1,"method":"browser.type","params":{"surface_id":"surface:9:tab","selector":"#name"}}"#,
+            r##"{"id":1,"method":"browser.type","params":{"surface_id":"surface:9:tab","selector":"#name"}}"##,
             &|command| panic!("invalid browser.type should not dispatch: {command:?}"),
         );
         assert_eq!(missing_text.result, None);
@@ -2350,7 +2383,7 @@ mod tests {
         );
 
         let type_response = dispatch_request(
-            r#"{"id":2,"method":"browser.type","params":{"surface_id":"surface:9:tab","selector":"#name","text":" Ada"}}"#,
+            r##"{"id":2,"method":"browser.type","params":{"surface_id":"surface:9:tab","selector":"#name","text":" Ada"}}"##,
             &|command| match command {
                 ControlCommand::BrowserAction {
                     target,
@@ -2371,7 +2404,9 @@ mod tests {
                     assert_eq!(value, None);
                     assert_eq!(key, None);
                     assert_eq!(dy, None);
-                    let _ = reply.send(Ok(json!({ "ok": true, "selector": selector, "text": text })));
+                    let _ = reply.send(Ok(
+                        json!({ "ok": true, "selector": selector, "text": text }),
+                    ));
                 }
                 other => panic!("unexpected command: {other:?}"),
             },
@@ -2382,7 +2417,9 @@ mod tests {
         let key_response = dispatch_request(
             r#"{"id":3,"method":"browser.press","params":{"surface_id":"surface:9:tab","key":"Enter"}}"#,
             &|command| match command {
-                ControlCommand::BrowserAction { action, key, reply, .. } => {
+                ControlCommand::BrowserAction {
+                    action, key, reply, ..
+                } => {
                     assert_eq!(action, "press");
                     assert_eq!(key, Some("Enter".to_string()));
                     let _ = reply.send(Ok(json!({ "ok": true, "key": key })));
@@ -2516,7 +2553,10 @@ mod tests {
             },
         );
         assert_eq!(new_response.error, None);
-        assert_eq!(new_response.result.expect("result")["surface_id"], "9:new-tab");
+        assert_eq!(
+            new_response.result.expect("result")["surface_id"],
+            "9:new-tab"
+        );
 
         let close_response = dispatch_request(
             r#"{"id":3,"method":"browser.tab.close","params":{"surface_id":"surface:9:tab","target_surface_id":"surface:9:other"}}"#,
@@ -2558,7 +2598,10 @@ mod tests {
         );
 
         assert_eq!(response.error, None);
-        assert_eq!(response.result.expect("result")["url"], "https://example.com");
+        assert_eq!(
+            response.result.expect("result")["url"],
+            "https://example.com"
+        );
     }
 
     #[test]

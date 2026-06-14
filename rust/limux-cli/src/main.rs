@@ -431,7 +431,6 @@ impl BrowserCookieImportRow {
     }
 }
 
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BrowserProfileDiscoveryDirs {
     home_dir: Option<PathBuf>,
@@ -466,12 +465,24 @@ fn browser_profile_candidates_in(
     if let Some(config_dir) = &dirs.config_dir {
         for (id, name, relative) in [
             ("google-chrome", "Google Chrome", "google-chrome"),
-            ("google-chrome-beta", "Google Chrome Beta", "google-chrome-beta"),
-            ("google-chrome-unstable", "Google Chrome Unstable", "google-chrome-unstable"),
+            (
+                "google-chrome-beta",
+                "Google Chrome Beta",
+                "google-chrome-beta",
+            ),
+            (
+                "google-chrome-unstable",
+                "Google Chrome Unstable",
+                "google-chrome-unstable",
+            ),
             ("chromium", "Chromium", "chromium"),
             ("brave", "Brave", "BraveSoftware/Brave-Browser"),
             ("microsoft-edge", "Microsoft Edge", "microsoft-edge"),
-            ("microsoft-edge-beta", "Microsoft Edge Beta", "microsoft-edge-beta"),
+            (
+                "microsoft-edge-beta",
+                "Microsoft Edge Beta",
+                "microsoft-edge-beta",
+            ),
             ("vivaldi", "Vivaldi", "vivaldi"),
         ] {
             candidates.push(BrowserProfileCandidate {
@@ -625,7 +636,10 @@ fn parse_firefox_profiles_ini(root: &Path, raw: &str) -> Vec<(String, PathBuf)> 
         }
         if line.starts_with('[') && line.ends_with(']') {
             flush_firefox_profile(&mut profiles, root, &section, &values);
-            section = line.trim_start_matches('[').trim_end_matches(']').to_string();
+            section = line
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .to_string();
             values.clear();
             continue;
         }
@@ -712,9 +726,7 @@ fn browser_profiles_payload_in(
             BrowserProfileFamily::Chromium => {
                 profiles.extend(discover_chromium_profiles(&candidate))
             }
-            BrowserProfileFamily::Firefox => {
-                profiles.extend(discover_firefox_profiles(&candidate))
-            }
+            BrowserProfileFamily::Firefox => profiles.extend(discover_firefox_profiles(&candidate)),
         }
         if include_missing && before == profiles.len() {
             missing_browsers.push(json!({
@@ -741,7 +753,9 @@ impl BrowserCookieImportFormat {
             "auto" => Ok(Self::Auto),
             "json" => Ok(Self::Json),
             "netscape" | "cookies.txt" | "txt" => Ok(Self::Netscape),
-            other => bail!("browser import-cookies --format must be auto|json|netscape, got {other}"),
+            other => {
+                bail!("browser import-cookies --format must be auto|json|netscape, got {other}")
+            }
         }
     }
 
@@ -776,10 +790,7 @@ fn load_browser_cookie_import_file(
     }
 }
 
-fn parse_browser_cookie_import_json(
-    raw: &str,
-    path: &Path,
-) -> Result<Vec<BrowserCookieImportRow>> {
+fn parse_browser_cookie_import_json(raw: &str, path: &Path) -> Result<Vec<BrowserCookieImportRow>> {
     let value: Value = serde_json::from_str(raw)
         .with_context(|| format!("browser cookie file {} is not valid JSON", path.display()))?;
     let rows = match &value {
@@ -787,13 +798,17 @@ fn parse_browser_cookie_import_json(
         Value::Object(map) => map
             .get("cookies")
             .and_then(Value::as_array)
-            .ok_or_else(|| anyhow!("JSON cookie import expects an array or object with cookies[]"))?,
+            .ok_or_else(|| {
+                anyhow!("JSON cookie import expects an array or object with cookies[]")
+            })?,
         _ => bail!("JSON cookie import expects an array or object with cookies[]"),
     };
 
     rows.iter()
         .enumerate()
-        .map(|(index, row)| json_cookie_import_row(row).with_context(|| format!("cookies[{index}]")))
+        .map(|(index, row)| {
+            json_cookie_import_row(row).with_context(|| format!("cookies[{index}]"))
+        })
         .collect()
 }
 
@@ -812,10 +827,10 @@ fn json_cookie_import_row(value: &Value) -> Result<BrowserCookieImportRow> {
     let map = value
         .as_object()
         .ok_or_else(|| anyhow!("cookie row must be an object"))?;
-    let name = get_string(value, &["name", "key"])
-        .ok_or_else(|| anyhow!("cookie row is missing name"))?;
-    let cookie_value = get_string(value, &["value"])
-        .ok_or_else(|| anyhow!("cookie row is missing value"))?;
+    let name =
+        get_string(value, &["name", "key"]).ok_or_else(|| anyhow!("cookie row is missing name"))?;
+    let cookie_value =
+        get_string(value, &["value"]).ok_or_else(|| anyhow!("cookie row is missing value"))?;
     let domain = get_string(value, &["domain", "host"]);
     let path = get_string(value, &["path"]);
     let http_only = map
@@ -824,14 +839,17 @@ fn json_cookie_import_row(value: &Value) -> Result<BrowserCookieImportRow> {
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let secure = map.get("secure").and_then(Value::as_bool).unwrap_or(false);
-    let expires_unix = get_i64(value, &[
-        "expires_unix",
-        "expires",
-        "expiry",
-        "expiration",
-        "expirationDate",
-        "expiration_date",
-    ])
+    let expires_unix = get_i64(
+        value,
+        &[
+            "expires_unix",
+            "expires",
+            "expiry",
+            "expiration",
+            "expirationDate",
+            "expiration_date",
+        ],
+    )
     .filter(|value| *value > 0);
 
     Ok(BrowserCookieImportRow {
@@ -875,7 +893,11 @@ fn parse_browser_cookie_import_netscape(
         let name = parts[5].trim();
         let value = parts[6].trim();
         if name.is_empty() {
-            bail!("{}:{} has an empty cookie name", path.display(), line_number);
+            bail!(
+                "{}:{} has an empty cookie name",
+                path.display(),
+                line_number
+            );
         }
         rows.push(BrowserCookieImportRow {
             name: name.to_string(),
@@ -884,7 +906,11 @@ fn parse_browser_cookie_import_netscape(
             path: Some(parts[2].trim().to_string()).filter(|value| !value.is_empty()),
             http_only,
             secure: parts[3].eq_ignore_ascii_case("TRUE"),
-            expires_unix: parts[4].trim().parse::<i64>().ok().filter(|value| *value > 0),
+            expires_unix: parts[4]
+                .trim()
+                .parse::<i64>()
+                .ok()
+                .filter(|value| *value > 0),
         });
     }
     Ok(rows)
@@ -1077,8 +1103,8 @@ fn parse_project_command_entry(
         .or_else(|| name_hint.and_then(nonempty_trimmed))
         .or_else(|| json_string_for_keys(map, &["label", "title"]))
         .ok_or_else(|| anyhow!("project command object is missing a name or id"))?;
-    let label = json_string_for_keys(map, &["label", "title", "name"])
-        .unwrap_or_else(|| name.clone());
+    let label =
+        json_string_for_keys(map, &["label", "title", "name"]).unwrap_or_else(|| name.clone());
     let cwd = json_string_for_keys(map, &["cwd", "working_directory", "workingDir"]);
 
     Ok(ProjectCommandDefinition {
@@ -1116,9 +1142,10 @@ fn parse_project_commands_from_value(
         }
         Value::Array(items) => {
             for (index, value) in items.iter().enumerate() {
-                parsed.push(parse_project_command_entry(None, value, source).with_context(|| {
-                    format!("invalid project command at commands[{index}]")
-                })?);
+                parsed.push(
+                    parse_project_command_entry(None, value, source)
+                        .with_context(|| format!("invalid project command at commands[{index}]"))?,
+                );
             }
         }
         _ => bail!("{} commands must be an object or array", source.display()),
@@ -1129,8 +1156,12 @@ fn parse_project_commands_from_value(
 fn load_project_commands_from_path(path: &Path) -> Result<Vec<ProjectCommandDefinition>> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("failed to read project command config {}", path.display()))?;
-    let value: Value = serde_json::from_str(&raw)
-        .with_context(|| format!("project command config {} is not valid JSON", path.display()))?;
+    let value: Value = serde_json::from_str(&raw).with_context(|| {
+        format!(
+            "project command config {} is not valid JSON",
+            path.display()
+        )
+    })?;
     parse_project_commands_from_value(&value, path)
 }
 
@@ -1175,10 +1206,7 @@ fn project_command_arg(args: &[String]) -> Option<String> {
     let mut index = 0usize;
     while index < args.len() {
         let arg = &args[index];
-        if matches!(
-            arg.as_str(),
-            "--project" | "--config" | "--cwd" | "--name"
-        ) {
+        if matches!(arg.as_str(), "--project" | "--config" | "--cwd" | "--name") {
             index += 2;
             continue;
         }
@@ -1653,7 +1681,9 @@ async fn run_list_notifications(client: &mut Client, args: &[String]) -> Result<
     if parse_flag(args, "--unread") || parse_flag(args, "--unread-only") {
         params.insert("unread_only".to_string(), Value::Bool(true));
     }
-    client.call("notification.list", Value::Object(params)).await
+    client
+        .call("notification.list", Value::Object(params))
+        .await
 }
 
 async fn run_clear_notifications(client: &mut Client, args: &[String]) -> Result<Value> {
@@ -1664,7 +1694,9 @@ async fn run_clear_notifications(client: &mut Client, args: &[String]) -> Result
             .map_err(|_| anyhow!("notification id must be a non-negative integer"))?;
         params.insert("id".to_string(), Value::Number(id.into()));
     }
-    client.call("notification.clear", Value::Object(params)).await
+    client
+        .call("notification.clear", Value::Object(params))
+        .await
 }
 
 async fn run_jump_notification(client: &mut Client, args: &[String]) -> Result<Value> {
@@ -1675,7 +1707,9 @@ async fn run_jump_notification(client: &mut Client, args: &[String]) -> Result<V
             .map_err(|_| anyhow!("notification id must be a non-negative integer"))?;
         params.insert("id".to_string(), Value::Number(id.into()));
     }
-    client.call("notification.jump", Value::Object(params)).await
+    client
+        .call("notification.jump", Value::Object(params))
+        .await
 }
 
 fn notification_rows_text(payload: &Value) -> String {
@@ -1702,12 +1736,11 @@ fn notification_row_text(row: &Value) -> String {
         .or_else(|| get_string(row, &["id"]))
         .unwrap_or_else(|| "?".to_string());
     let unread = row.get("unread").and_then(Value::as_bool).unwrap_or(false);
-    let workspace = get_string(row, &["workspace_ref", "workspace_id"])
-        .unwrap_or_else(|| "none".to_string());
-    let surface = get_string(row, &["surface_ref", "surface_id"])
-        .unwrap_or_else(|| "none".to_string());
-    let message = get_string(row, &["message", "title", "body"])
-        .unwrap_or_else(|| "".to_string());
+    let workspace =
+        get_string(row, &["workspace_ref", "workspace_id"]).unwrap_or_else(|| "none".to_string());
+    let surface =
+        get_string(row, &["surface_ref", "surface_id"]).unwrap_or_else(|| "none".to_string());
+    let message = get_string(row, &["message", "title", "body"]).unwrap_or_else(|| "".to_string());
     format!(
         "id={} unread={} workspace={} surface={} message={}",
         id, unread, workspace, surface, message
@@ -2854,7 +2887,9 @@ async fn run_project_commands_command(
         } else {
             let handle = handle_from_payload(&payload, "workspace_id", "workspace_ref");
             let command = get_string(&payload, &["project_command"]).unwrap_or_default();
-            Ok(CommandOutput::Text(format!("OK {handle} command={command}")))
+            Ok(CommandOutput::Text(format!(
+                "OK {handle} command={command}"
+            )))
         }
     } else if subcommand.is_none()
         || matches!(subcommand, Some("list"))
@@ -2984,8 +3019,8 @@ fn build_ssh_workspace_request(args: &[String]) -> Result<SshWorkspaceRequest> {
     if ssh_args.is_empty() {
         bail!("ssh requires a remote target");
     }
-    let target = ssh_workspace_target(&ssh_args)
-        .ok_or_else(|| anyhow!("ssh requires a remote target"))?;
+    let target =
+        ssh_workspace_target(&ssh_args).ok_or_else(|| anyhow!("ssh requires a remote target"))?;
     let name = explicit_name.unwrap_or_else(|| format!("ssh:{target}"));
     Ok(SshWorkspaceRequest {
         name,
@@ -3440,7 +3475,10 @@ async fn run_sidebar_state(client: &mut Client, args: &[String]) -> Result<Value
         .ok_or_else(|| anyhow!("sidebar-state requires --workspace <id|ref>"))?;
 
     match client
-        .call("sidebar.state", json!({ "workspace_id": workspace.clone() }))
+        .call(
+            "sidebar.state",
+            json!({ "workspace_id": workspace.clone() }),
+        )
         .await
     {
         Ok(payload) => return Ok(payload),
@@ -3894,8 +3932,8 @@ async fn run_browser(
             let mut payload = browser_call(client, Some(sid), "browser.screenshot", params).await?;
             let mut path = get_string(&payload, &["path"])
                 .unwrap_or_else(|| "/tmp/limux-browser-shot.png".to_string());
-            if let Some(out_path) = out {
-                path = out_path;
+            if let Some(out_path) = &out {
+                path = out_path.clone();
             }
             if !Path::new(&path).exists() {
                 if let Some(parent) = Path::new(&path).parent() {
@@ -4126,9 +4164,8 @@ async fn run_browser(
             let file = parse_opt(&browser_args, "--file")
                 .or_else(|| rest.first().cloned())
                 .ok_or_else(|| anyhow!("browser import-cookies requires --file <path>"))?;
-            let format = BrowserCookieImportFormat::parse(
-                parse_opt(&browser_args, "--format").as_deref(),
-            )?;
+            let format =
+                BrowserCookieImportFormat::parse(parse_opt(&browser_args, "--format").as_deref())?;
             let cookies = load_browser_cookie_import_file(Path::new(&file), format)?;
             let host_payload = browser_call(client, Some(sid.clone()), "browser.cookies.import", {
                 let mut p = Map::new();
@@ -4278,14 +4315,8 @@ async fn run_browser(
             .await?;
             CommandOutput::Json(payload)
         }
-        "check"
-        | "uncheck"
-        | "focus"
-        | "hover"
-        | "dblclick"
-        | "doubleclick"
-        | "scroll-into-view"
-        | "scroll_into_view" => {
+        "check" | "uncheck" | "focus" | "hover" | "dblclick" | "doubleclick"
+        | "scroll-into-view" | "scroll_into_view" => {
             let sid = surface
                 .clone()
                 .ok_or_else(|| anyhow!("browser {} requires a surface", sub))?;
@@ -4331,11 +4362,21 @@ async fn run_browser(
             let explicit_selector = parse_opt(&browser_args, "--selector");
             let amount_flag = parse_opt(&browser_args, "--amount");
             let (selector, amount) = if let Some(selector) = explicit_selector {
-                (Some(selector), amount_flag.or_else(|| rest.first().cloned()))
-            } else if rest.first().and_then(|value| value.parse::<u64>().ok()).is_some() {
+                (
+                    Some(selector),
+                    amount_flag.or_else(|| rest.first().cloned()),
+                )
+            } else if rest
+                .first()
+                .and_then(|value| value.parse::<u64>().ok())
+                .is_some()
+            {
                 (None, amount_flag.or_else(|| rest.first().cloned()))
             } else {
-                (rest.first().cloned(), amount_flag.or_else(|| rest.get(1).cloned()))
+                (
+                    rest.first().cloned(),
+                    amount_flag.or_else(|| rest.get(1).cloned()),
+                )
             };
             let mut p = Map::new();
             if let Some(selector) = selector {
@@ -4882,7 +4923,10 @@ async fn execute_command(client: &mut Client, opts: &GlobalOptions) -> Result<Co
                 let cwd = get_string(&payload, &["cwd"]).unwrap_or_else(|| "none".to_string());
                 let git_branch =
                     get_string(&payload, &["git_branch"]).unwrap_or_else(|| "none".to_string());
-                let unread = payload.get("unread").and_then(Value::as_bool).unwrap_or(false);
+                let unread = payload
+                    .get("unread")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 let latest_notification = get_string(&payload, &["latest_notification"])
                     .unwrap_or_else(|| "none".to_string());
                 let pr_number = payload
@@ -5127,7 +5171,10 @@ mod cli_arg_tests {
         assert_eq!(dev.command, "npm run dev");
         assert_eq!(resolved_project_command_cwd(dev, None), "/repo");
 
-        let test = parsed.iter().find(|command| command.name == "test").unwrap();
+        let test = parsed
+            .iter()
+            .find(|command| command.name == "test")
+            .unwrap();
         assert_eq!(test.label, "Tests");
         assert_eq!(test.command, "'npm' 'test'");
         assert_eq!(resolved_project_command_cwd(test, None), "/repo/web");
@@ -5194,7 +5241,6 @@ mod cli_arg_tests {
         assert!(netscape_rows[1].secure);
     }
 
-
     #[test]
     fn browser_profile_discovery_finds_chromium_and_firefox_profiles() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -5258,18 +5304,27 @@ mod cli_arg_tests {
         let root = dir.path();
         let nested = root.join("a/b");
         fs::create_dir_all(&nested).expect("nested dirs");
-        fs::write(root.join("cmux.json"), r#"{"commands":{"root":"echo root"}}"#)
-            .expect("root cmux");
-        fs::write(nested.join("limux.json"), r#"{"commands":{"nested":"echo nested"}}"#)
-            .expect("nested limux");
+        fs::write(
+            root.join("cmux.json"),
+            r#"{"commands":{"root":"echo root"}}"#,
+        )
+        .expect("root cmux");
+        fs::write(
+            nested.join("limux.json"),
+            r#"{"commands":{"nested":"echo nested"}}"#,
+        )
+        .expect("nested limux");
 
         assert_eq!(
             find_project_command_config_in(&nested),
             Some(nested.join("limux.json"))
         );
 
-        fs::write(nested.join("cmux.json"), r#"{"commands":{"cmux":"echo cmux"}}"#)
-            .expect("nested cmux");
+        fs::write(
+            nested.join("cmux.json"),
+            r#"{"commands":{"cmux":"echo cmux"}}"#,
+        )
+        .expect("nested cmux");
         assert_eq!(
             find_project_command_config_in(&nested),
             Some(nested.join("cmux.json"))
@@ -5303,7 +5358,10 @@ mod cli_arg_tests {
         assert_eq!(request.command_name, "dev");
         assert_eq!(request.workspace_name, "Dev server");
         assert_eq!(request.command, "npm run dev");
-        assert_eq!(request.cwd, dir.path().join("web").to_string_lossy().to_string());
+        assert_eq!(
+            request.cwd,
+            dir.path().join("web").to_string_lossy().to_string()
+        );
 
         let named = build_project_command_workspace_request(&args(&[
             "--config",
@@ -5355,7 +5413,10 @@ mod cli_arg_tests {
 
     #[test]
     fn notification_rows_text_formats_empty_and_populated_lists() {
-        assert_eq!(notification_rows_text(&json!({ "notifications": [] })), "none");
+        assert_eq!(
+            notification_rows_text(&json!({ "notifications": [] })),
+            "none"
+        );
         assert_eq!(
             notification_rows_text(&json!({
                 "notifications": [{
