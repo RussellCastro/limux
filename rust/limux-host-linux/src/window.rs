@@ -31,6 +31,8 @@ use crate::split_tree::{self, SplitTreeContainer};
 const PANE_CREATE_COMMAND_READY_INTERVAL_MS: u64 = 50;
 const PANE_CREATE_COMMAND_READY_ATTEMPTS: u32 = 40;
 
+type OnConfigChanged = dyn Fn(&app_config::AppConfig, &app_config::AppConfig);
+
 const COMMAND_PALETTE_CSS: &str = r#"
 .limux-command-palette {
     background-color: @window_bg_color;
@@ -3389,10 +3391,9 @@ fn settings_editor_input(state: &State) -> settings_editor::SettingsEditorInput 
     > = Rc::new(move |id, binding| persist_shortcut_binding(&state_for_capture, id, binding));
 
     let state_for_config_changed = state.clone();
-    let on_config_changed: Rc<dyn Fn(&app_config::AppConfig, &app_config::AppConfig)> =
-        Rc::new(move |previous, updated| {
-            handle_config_changed(&state_for_config_changed, previous, updated);
-        });
+    let on_config_changed: Rc<OnConfigChanged> = Rc::new(move |previous, updated| {
+        handle_config_changed(&state_for_config_changed, previous, updated);
+    });
 
     settings_editor::SettingsEditorInput {
         config,
@@ -6012,7 +6013,7 @@ fn handle_control_command(state: &State, command: ControlCommand) {
                             let value_type = eval_map.remove("value_type");
                             let value = eval_map
                                 .remove("value")
-                                .unwrap_or_else(|| serde_json::Value::Object(eval_map));
+                                .unwrap_or(serde_json::Value::Object(eval_map));
                             (value, value_type)
                         }
                         value => (value, None),
@@ -8436,13 +8437,10 @@ fn mark_workspace_unread_with_message(
     let active_idx = s.active_idx;
     let window_active = s.window.is_active();
     let notifications = s.config.borrow().notifications;
-    let Some(idx) = s
+    let idx = s
         .workspaces
         .iter()
-        .position(|workspace| workspace.id == ws_id)
-    else {
-        return None;
-    };
+        .position(|workspace| workspace.id == ws_id)?;
 
     record_live_notification(
         &mut s,

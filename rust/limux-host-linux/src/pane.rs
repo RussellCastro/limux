@@ -4401,14 +4401,6 @@ impl BrowserControlHandle {
         self.handles.reload()
     }
 
-    pub(crate) fn evaluate_javascript(
-        &self,
-        script: String,
-        on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
-    ) {
-        self.handles.evaluate_javascript(script, on_result)
-    }
-
     pub(crate) fn frame_main(&self) -> serde_json::Value {
         self.handles.frame_main()
     }
@@ -4481,6 +4473,7 @@ impl BrowserControlHandle {
         self.handles.get(kind, selector, name, on_result)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn wait(
         &self,
         selector: Option<String>,
@@ -4502,6 +4495,7 @@ impl BrowserControlHandle {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn action(
         &self,
         method: String,
@@ -4618,11 +4612,11 @@ fn browser_cookie_domain_from_uri(uri: Option<&str>) -> Option<String> {
     let uri = uri?.trim();
     let (_, after_scheme) = uri.split_once("://")?;
     let authority = after_scheme
-        .split(|c| matches!(c, '/' | '?' | '#'))
+        .split(['/', '?', '#'])
         .next()
         .unwrap_or_default()
         .split('@')
-        .last()
+        .next_back()
         .unwrap_or_default()
         .trim();
     let host = if let Some(bracketed) = authority.strip_prefix('[') {
@@ -4913,6 +4907,7 @@ impl BrowserHandles {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn wait(
         &self,
         selector: Option<String>,
@@ -4954,59 +4949,59 @@ impl BrowserHandles {
         deadline: std::time::Instant,
         on_result: BrowserResultCallback,
     ) {
-        handles.evaluate_javascript(
-            handles.scoped_script(browser_wait_script(&condition)),
-            move |result| {
-                let now = std::time::Instant::now();
-                match parse_browser_wait_value(result) {
-                    Ok(mut value) => {
-                        let ready = value
-                            .get("ready")
-                            .and_then(serde_json::Value::as_bool)
-                            .unwrap_or(false);
-                        if let Some(map) = value.as_object_mut() {
-                            map.insert(
-                        "elapsed_ms".to_string(),
-                        serde_json::json!(now.duration_since(started_at).as_millis() as u64),
-                    );
-                            map.insert(
-                                "timeout_ms".to_string(),
-                                serde_json::json!(
-                                    deadline.duration_since(started_at).as_millis() as u64
-                                ),
-                            );
-                        }
-                        if ready {
-                            finish_browser_result(&on_result, Ok(value));
-                        } else if now >= deadline {
-                            finish_browser_result(
-                                &on_result,
-                                Err("wait condition not met".to_string()),
-                            );
-                        } else {
-                            let next_handles = handles.clone();
-                            let next_condition = condition.clone();
-                            let next_on_result = on_result.clone();
-                            glib::timeout_add_local_once(
-                                std::time::Duration::from_millis(BROWSER_WAIT_POLL_INTERVAL_MS),
-                                move || {
-                                    Self::browser_wait_poll(
-                                        next_handles,
-                                        next_condition,
-                                        started_at,
-                                        deadline,
-                                        next_on_result,
-                                    );
-                                },
-                            );
-                        }
+        let script = handles.scoped_script(browser_wait_script(&condition));
+        let handles_for_retry = handles.clone();
+        handles.evaluate_javascript(script, move |result| {
+            let now = std::time::Instant::now();
+            match parse_browser_wait_value(result) {
+                Ok(mut value) => {
+                    let ready = value
+                        .get("ready")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false);
+                    if let Some(map) = value.as_object_mut() {
+                        map.insert(
+                            "elapsed_ms".to_string(),
+                            serde_json::json!(now.duration_since(started_at).as_millis() as u64),
+                        );
+                        map.insert(
+                            "timeout_ms".to_string(),
+                            serde_json::json!(
+                                deadline.duration_since(started_at).as_millis() as u64
+                            ),
+                        );
                     }
-                    Err(error) => finish_browser_result(&on_result, Err(error)),
+                    if ready {
+                        finish_browser_result(&on_result, Ok(value));
+                    } else if now >= deadline {
+                        finish_browser_result(
+                            &on_result,
+                            Err("wait condition not met".to_string()),
+                        );
+                    } else {
+                        let next_handles = handles_for_retry.clone();
+                        let next_condition = condition.clone();
+                        let next_on_result = on_result.clone();
+                        glib::timeout_add_local_once(
+                            std::time::Duration::from_millis(BROWSER_WAIT_POLL_INTERVAL_MS),
+                            move || {
+                                Self::browser_wait_poll(
+                                    next_handles,
+                                    next_condition,
+                                    started_at,
+                                    deadline,
+                                    next_on_result,
+                                );
+                            },
+                        );
+                    }
                 }
-            },
-        );
+                Err(error) => finish_browser_result(&on_result, Err(error)),
+            }
+        });
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn action(
         &self,
         method: String,
@@ -5834,10 +5829,6 @@ fn create_browser_widget(
             }
         });
     }
-
-    // Suppress unused variable warnings
-    let _ = network_session;
-    let _ = web_context;
 
     (vbox.upcast(), "Browser".to_string(), browser_handles)
 }

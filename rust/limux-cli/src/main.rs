@@ -1740,7 +1740,7 @@ fn notification_row_text(row: &Value) -> String {
         get_string(row, &["workspace_ref", "workspace_id"]).unwrap_or_else(|| "none".to_string());
     let surface =
         get_string(row, &["surface_ref", "surface_id"]).unwrap_or_else(|| "none".to_string());
-    let message = get_string(row, &["message", "title", "body"]).unwrap_or_else(|| "".to_string());
+    let message = get_string(row, &["message", "title", "body"]).unwrap_or_default();
     format!(
         "id={} unread={} workspace={} surface={} message={}",
         id, unread, workspace, surface, message
