@@ -55,6 +55,7 @@ const METHODS: &[&str] = &[
     "browser.wait",
     "browser.eval",
     "browser.snapshot",
+    "browser.screenshot",
     "browser.find.text",
     "browser.find.label",
     "browser.find.placeholder",
@@ -252,6 +253,12 @@ pub enum ControlCommand {
         surface_hint: Option<String>,
         reply: mpsc::Sender<BridgeResult>,
     },
+    BrowserScreenshot {
+        target: WorkspaceTarget,
+        surface_hint: Option<String>,
+        path: Option<String>,
+        reply: mpsc::Sender<BridgeResult>,
+    },
     BrowserFind {
         target: WorkspaceTarget,
         surface_hint: Option<String>,
@@ -392,6 +399,7 @@ impl ControlCommand {
             | Self::BrowserEval { reply, .. }
             | Self::BrowserFrame { reply, .. }
             | Self::BrowserSnapshot { reply, .. }
+            | Self::BrowserScreenshot { reply, .. }
             | Self::BrowserFind { reply, .. }
             | Self::BrowserClick { reply, .. }
             | Self::BrowserFill { reply, .. }
@@ -1001,6 +1009,27 @@ fn handle_method(
                 ControlCommand::BrowserSnapshot {
                     target,
                     surface_hint,
+                    reply,
+                },
+                rx,
+            )
+        }
+        "browser.screenshot" => {
+            let target = match parse_optional_workspace_target(params, true) {
+                Ok(target) => target,
+                Err(error) => return error_response(id, error),
+            };
+            let surface_hint =
+                match optional_ref_handle(params, &["surface_id", "id"], "surface:") {
+                    Ok(surface_hint) => surface_hint,
+                    Err(error) => return error_response(id, error),
+                };
+            let (reply, rx) = mpsc::channel();
+            (
+                ControlCommand::BrowserScreenshot {
+                    target,
+                    surface_hint,
+                    path: optional_string(params, &["path", "out"]),
                     reply,
                 },
                 rx,
@@ -2052,6 +2081,33 @@ mod tests {
 
         assert_eq!(response.error, None);
         assert_eq!(response.result.expect("result")["text"], "Limux");
+    }
+
+    #[test]
+    fn browser_screenshot_route_accepts_surface_refs_and_path() {
+        let response = dispatch_request(
+            r#"{"id":1,"method":"browser.screenshot","params":{"surface_id":"surface:9:tab","path":"/tmp/shot.png"}}"#,
+            &|command| match command {
+                ControlCommand::BrowserScreenshot {
+                    target,
+                    surface_hint,
+                    path,
+                    reply,
+                } => {
+                    assert_eq!(target, WorkspaceTarget::Active);
+                    assert_eq!(surface_hint, Some("9:tab".to_string()));
+                    assert_eq!(path.as_deref(), Some("/tmp/shot.png"));
+                    let _ = reply.send(Ok(json!({
+                        "path": "/tmp/shot.png",
+                        "mime_type": "image/png",
+                    })));
+                }
+                other => panic!("unexpected command: {other:?}"),
+            },
+        );
+
+        assert_eq!(response.error, None);
+        assert_eq!(response.result.expect("result")["path"], "/tmp/shot.png");
     }
 
     #[test]

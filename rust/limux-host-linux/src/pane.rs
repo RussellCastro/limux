@@ -4192,6 +4192,14 @@ impl BrowserControlHandle {
         self.handles.snapshot(on_result)
     }
 
+    pub(crate) fn screenshot(
+        &self,
+        path: String,
+        on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
+    ) {
+        self.handles.screenshot(path, on_result)
+    }
+
     pub(crate) fn click(
         &self,
         selector: String,
@@ -4413,6 +4421,39 @@ impl BrowserHandles {
             });
             on_result(result);
         });
+    }
+
+    fn screenshot(
+        &self,
+        path: String,
+        on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
+    ) {
+        self.webview.snapshot(
+            webkit6::SnapshotRegion::Visible,
+            webkit6::SnapshotOptions::NONE,
+            None::<&gtk::gio::Cancellable>,
+            move |result| {
+                let result = result
+                    .map_err(|error| error.to_string())
+                    .and_then(|texture| {
+                        let path_ref = std::path::Path::new(&path);
+                        if let Some(parent) = path_ref.parent() {
+                            std::fs::create_dir_all(parent).map_err(|error| {
+                                format!("failed to create screenshot directory: {error}")
+                            })?;
+                        }
+                        gtk::gdk::prelude::TextureExt::save_to_png(&texture, path_ref)
+                            .map_err(|error| format!("failed to save screenshot: {error}"))?;
+                        Ok(serde_json::json!({
+                            "path": path,
+                            "mime_type": "image/png",
+                            "width": gtk::gdk::prelude::TextureExt::width(&texture),
+                            "height": gtk::gdk::prelude::TextureExt::height(&texture),
+                        }))
+                    });
+                on_result(result);
+            },
+        );
     }
 
     fn click(
@@ -4811,6 +4852,14 @@ impl BrowserHandles {
 
     fn snapshot(&self, on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static) {
         on_result(Err("browser.snapshot requires WebKit support".to_string()));
+    }
+
+    fn screenshot(
+        &self,
+        _path: String,
+        on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static,
+    ) {
+        on_result(Err("browser.screenshot requires WebKit support".to_string()));
     }
 
     fn click(

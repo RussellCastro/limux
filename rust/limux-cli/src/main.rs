@@ -2766,9 +2766,12 @@ async fn run_browser(
             let sid = surface
                 .clone()
                 .ok_or_else(|| anyhow!("browser screenshot requires a surface"))?;
-            let mut payload =
-                browser_call(client, Some(sid), "browser.screenshot", Map::new()).await?;
             let out = parse_opt(&browser_args, "--out");
+            let mut params = Map::new();
+            if let Some(path) = out.clone() {
+                params.insert("path".to_string(), Value::String(path));
+            }
+            let mut payload = browser_call(client, Some(sid), "browser.screenshot", params).await?;
             let mut path = get_string(&payload, &["path"])
                 .unwrap_or_else(|| "/tmp/limux-browser-shot.png".to_string());
             if let Some(out_path) = out {
@@ -2789,7 +2792,7 @@ async fn run_browser(
                 obj.insert("url".to_string(), Value::String(url.clone()));
                 obj.remove("png_base64");
             }
-            if parse_opt(&browser_args, "--out").is_some() {
+            if out.is_some() {
                 CommandOutput::Text(format!("OK {}", path))
             } else if local_json {
                 CommandOutput::Json(payload)

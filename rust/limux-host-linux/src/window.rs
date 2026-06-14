@@ -694,6 +694,27 @@ fn browser_tab_payload(workspace_id: &str, surface: pane::SurfaceSummary) -> ser
     serde_json::Value::Object(payload)
 }
 
+fn browser_screenshot_path(surface_id: &str, requested_path: Option<String>) -> String {
+    if let Some(path) = requested_path
+        .map(|path| path.trim().to_string())
+        .filter(|path| !path.is_empty())
+    {
+        return path;
+    }
+
+    let safe_surface_id = surface_id
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect::<String>();
+    std::env::temp_dir()
+        .join(format!(
+            "limux-browser-shot-{safe_surface_id}-{}.png",
+            uuid::Uuid::new_v4()
+        ))
+        .to_string_lossy()
+        .to_string()
+}
+
 fn browser_control_payload(
     workspace_id: &str,
     surface_id: &str,
@@ -5310,6 +5331,61 @@ fn handle_control_command(state: &State, command: ControlCommand) {
                 }
             });
         }
+        ControlCommand::BrowserScreenshot {
+            target,
+            surface_hint,
+            path,
+            reply,
+        } => {
+            let resolved = {
+                let app_state = state.borrow();
+                workspace_index_for_target(&app_state, &target)
+            };
+
+            let Some(index) = resolved else {
+                let _ = reply.send(Err(crate::control_bridge::BridgeError::not_found(
+                    "workspace not found",
+                )));
+                return;
+            };
+
+            let target = {
+                let app_state = state.borrow();
+                let workspace = &app_state.workspaces[index];
+                pane::browser_handle_for_root(&workspace.root, surface_hint.as_deref()).map(
+                    |(surface_id, handle)| (workspace.id.clone(), surface_id, handle),
+                )
+            };
+
+            let Some((workspace_id, surface_id, handle)) = target else {
+                let _ = reply.send(Err(crate::control_bridge::BridgeError::not_found(
+                    "browser surface not found",
+                )));
+                return;
+            };
+
+            let screenshot_path = browser_screenshot_path(&surface_id, path);
+            let payload = browser_control_payload(&workspace_id, &surface_id, &handle);
+            handle.screenshot(screenshot_path, move |result| match result {
+                Ok(screenshot) => {
+                    let mut payload = payload;
+                    if let (Some(payload_map), Some(screenshot_map)) =
+                        (payload.as_object_mut(), screenshot.as_object())
+                    {
+                        for (key, value) in screenshot_map {
+                            payload_map.insert(key.clone(), value.clone());
+                        }
+                        payload_map.insert("ok".to_string(), serde_json::Value::Bool(true));
+                    }
+                    let _ = reply.send(Ok(payload));
+                }
+                Err(error) => {
+                    let _ = reply.send(Err(crate::control_bridge::BridgeError::internal(
+                        format!("browser.screenshot failed: {error}"),
+                    )));
+                }
+            });
+        }
         ControlCommand::BrowserFind {
             target,
             surface_hint,
@@ -7394,7 +7470,8 @@ mod tests {
         ss_line_listening_port, ss_line_pids, ss_line_process_name, tab_drag_workspace_seed,
         use_opaque_window_background,
         validate_workspace_folder_input_with_dirs, workspace_drop_layout_path,
-        workspace_folder_path_from_input, workspace_notification_message, Direction,
+        workspace_folder_path_from_input, workspace_notification_message, browser_screenshot_path,
+        Direction,
         EditableCaptureContext, NeighborScore, PaneBounds, PaneCreateDirection,
         PaneCreateTargetError, PortalColorSchemePreference, SessionSaveAccess, SessionSaveRequest,
         WorkspaceSeedSource, BASE_CSS, HOST_ENTRY_CSS_CLASS, WORKSPACE_RENAME_ENTRY_CSS_CLASS,
@@ -7652,6 +7729,18 @@ mod tests {
         );
         assert!(BASE_CSS.contains(".limux-ws-rename-entry"));
         assert!(BASE_CSS.contains(".limux-ws-meta"));
+    }
+
+    #[test]
+    fn browser_screenshot_path_uses_requested_path_or_safe_temp_name() {
+        assert_eq!(
+            browser_screenshot_path("surface:9:tab", Some(" /tmp/shot.png ".to_string())),
+            "/tmp/shot.png"
+        );
+
+        let generated = browser_screenshot_path("surface:9:tab", None);
+        assert!(generated.contains("limux-browser-shot-surface-9-tab-"));
+        assert!(generated.ends_with(".png"));
     }
 
     #[test]
