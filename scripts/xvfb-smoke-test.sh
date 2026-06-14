@@ -496,6 +496,49 @@ grep -q '"ok"[[:space:]]*:[[:space:]]*true' "$LOG_DIR/stage8-storage-clear.json"
 grep -q '"value"[[:space:]]*:[[:space:]]*null' "$LOG_DIR/stage8-storage-after-clear.json" \
   || { echo "FAIL: browser storage clear did not remove smoke-key"; exit 1; }
 
+"$LIMUX_CLI" --json browser "$BROWSER_SURFACE" cookies set smoke-cookie cookie-value \
+  2>&1 | tee "$LOG_DIR/stage8-cookie-set.json"
+grep -q '"ok"[[:space:]]*:[[:space:]]*true' "$LOG_DIR/stage8-cookie-set.json" \
+  || { echo "FAIL: browser cookie set did not report ok=true"; exit 1; }
+"$LIMUX_CLI" --json browser "$BROWSER_SURFACE" cookies get smoke-cookie \
+  2>&1 | tee "$LOG_DIR/stage8-cookie-get.json"
+grep -q '"name"[[:space:]]*:[[:space:]]*"smoke-cookie"' "$LOG_DIR/stage8-cookie-get.json" \
+  || { echo "FAIL: browser cookie get missing smoke-cookie"; exit 1; }
+grep -q '"value"[[:space:]]*:[[:space:]]*"cookie-value"' "$LOG_DIR/stage8-cookie-get.json" \
+  || { echo "FAIL: browser cookie get missing cookie-value"; exit 1; }
+"$LIMUX_CLI" --json browser "$BROWSER_SURFACE" cookies clear smoke-cookie \
+  2>&1 | tee "$LOG_DIR/stage8-cookie-clear.json"
+grep -q '"ok"[[:space:]]*:[[:space:]]*true' "$LOG_DIR/stage8-cookie-clear.json" \
+  || { echo "FAIL: browser cookie clear did not report ok=true"; exit 1; }
+"$LIMUX_CLI" --json browser "$BROWSER_SURFACE" cookies get smoke-cookie \
+  2>&1 | tee "$LOG_DIR/stage8-cookie-after-clear.json"
+if grep -q '"name"[[:space:]]*:[[:space:]]*"smoke-cookie"' "$LOG_DIR/stage8-cookie-after-clear.json"; then
+  echo "FAIL: browser cookie clear did not remove smoke-cookie"
+  exit 1
+fi
+
+BROWSER_COOKIE_IMPORT="$DEMO_DIR/browser-cookies.json"
+cat > "$BROWSER_COOKIE_IMPORT" <<SMOKE_COOKIES
+{
+  "cookies": [
+    {
+      "name": "imported-cookie",
+      "value": "imported-value",
+      "domain": "127.0.0.1",
+      "path": "/",
+      "secure": false,
+      "http_only": false
+    }
+  ]
+}
+SMOKE_COOKIES
+"$LIMUX_CLI" --json browser "$BROWSER_SURFACE" import-cookies --file "$BROWSER_COOKIE_IMPORT" --format json \
+  2>&1 | tee "$LOG_DIR/stage8-cookie-import.json"
+grep -q '"imported_count"[[:space:]]*:[[:space:]]*1' "$LOG_DIR/stage8-cookie-import.json" \
+  || { echo "FAIL: browser import-cookies did not import exactly one cookie"; exit 1; }
+grep -q '"name"[[:space:]]*:[[:space:]]*"imported-cookie"' "$LOG_DIR/stage8-cookie-import.json" \
+  || { echo "FAIL: browser import-cookies response missing imported-cookie"; exit 1; }
+
 "$LIMUX_CLI" --json browser "$BROWSER_SURFACE" frame "#child-frame" \
   2>&1 | tee "$LOG_DIR/stage8-frame-select.json"
 grep -q '"ok"[[:space:]]*:[[:space:]]*true' "$LOG_DIR/stage8-frame-select.json" \
@@ -549,7 +592,7 @@ grep -q '"ok"[[:space:]]*:[[:space:]]*true' "$LOG_DIR/stage8-tab-close.json" \
 "$LIMUX_CLI" browser "$BROWSER_SURFACE" screenshot --out "$BROWSER_SHOT" \
   2>&1 | tee "$LOG_DIR/stage8-screenshot.txt"
 [ -s "$BROWSER_SHOT" ] || { echo "FAIL: browser screenshot did not write a non-empty PNG"; exit 1; }
-echo "stage 8: OK (browser bridge open/wait/snapshot/find/click/fill/eval/storage/frame/tab/screenshot)"
+echo "stage 8: OK (browser bridge open/wait/snapshot/find/click/fill/eval/storage/cookies/frame/tab/screenshot)"
 
 # --- 12. Stage 9: hook translators end-to-end -----------------------------
 echo
