@@ -33,6 +33,17 @@ const PANE_CREATE_COMMAND_READY_ATTEMPTS: u32 = 40;
 // State
 // ---------------------------------------------------------------------------
 
+#[derive(Clone, Debug)]
+struct LiveNotification {
+    id: u64,
+    message: String,
+    title: String,
+    subtitle: String,
+    body: String,
+    workspace_id: Option<String>,
+    unread: bool,
+}
+
 struct Workspace {
     id: String,
     name: String,
@@ -85,6 +96,8 @@ pub(crate) struct AppState {
     persistence_suspended: bool,
     save_queued: bool,
     workspace_dragging: Option<String>,
+    next_notification_id: u64,
+    notifications: Vec<LiveNotification>,
     desktop_notification_routes: HashMap<u32, DesktopNotificationRoute>,
     _theme_portal_signal: Option<gio::SignalSubscription>,
     _theme_gnome_settings: Option<gio::Settings>,
@@ -2014,6 +2027,8 @@ pub fn build_window(app: &adw::Application) {
         persistence_suspended: false,
         save_queued: false,
         workspace_dragging: None,
+        next_notification_id: 1,
+        notifications: Vec::new(),
         desktop_notification_routes: HashMap::new(),
         _theme_portal_signal: None,
         _theme_gnome_settings: None,
@@ -6059,6 +6074,26 @@ fn handle_control_command(state: &State, command: ControlCommand) {
                 show_desktop_notification(state, request);
             }
 
+            let notification = {
+                let mut app_state = state.borrow_mut();
+                if let Some(notification) = app_state.notifications.last_mut() {
+                    notification.title = title.clone();
+                    notification.subtitle = subtitle.clone();
+                    notification.body = body.clone();
+                    notification.message = message.clone();
+                    Some(notification.clone())
+                } else {
+                    Some(record_live_notification(
+                        &mut app_state,
+                        Some(ws_id.clone()),
+                        message.clone(),
+                        title.clone(),
+                        subtitle.clone(),
+                        body.clone(),
+                    ))
+                }
+            };
+
             let payload = serde_json::json!({
                 "ok": true,
                 "workspace_id": ws_id,
@@ -6066,7 +6101,45 @@ fn handle_control_command(state: &State, command: ControlCommand) {
                 "title": title,
                 "subtitle": subtitle,
                 "body": body,
+                "notification_id": notification.as_ref().map(|notification| notification.id),
+                "notification": notification.as_ref().map(live_notification_row),
             });
+            let _ = reply.send(Ok(payload));
+        }
+        ControlCommand::ListNotifications { unread_only, reply } => {
+            let payload = {
+                let app_state = state.borrow();
+                live_notifications_payload(&app_state.notifications, unread_only)
+            };
+            let _ = reply.send(Ok(payload));
+        }
+        ControlCommand::ClearNotifications { id, reply } => {
+            let payload = {
+                let mut app_state = state.borrow_mut();
+                if let Some(id) = id {
+                    let cleared_workspace_ids = app_state
+                        .notifications
+                        .iter()
+                        .filter(|notification| notification.id == id)
+                        .filter_map(|notification| notification.workspace_id.clone())
+                        .collect::<Vec<_>>();
+                    app_state
+                        .notifications
+                        .retain(|notification| notification.id != id);
+                    for workspace_id in cleared_workspace_ids {
+                        clear_workspace_unread_if_no_unread_notification(
+                            &mut app_state,
+                            &workspace_id,
+                        );
+                    }
+                } else {
+                    app_state.notifications.clear();
+                    for workspace in &mut app_state.workspaces {
+                        clear_workspace_unread_visuals(workspace);
+                    }
+                }
+                live_notifications_payload(&app_state.notifications, false)
+            };
             let _ = reply.send(Ok(payload));
         }
     }
@@ -6388,8 +6461,14 @@ fn switch_workspace(state: &State, idx: usize) {
         }
         s.active_idx = idx;
         let stack = s.stack.clone();
-        let stack_name = format!("ws-{}", s.workspaces[idx].id);
+        let workspace_id = s.workspaces[idx].id.clone();
+        let stack_name = format!("ws-{workspace_id}");
         let focus_root = s.workspaces[idx].root.clone();
+        for notification in &mut s.notifications {
+            if notification.workspace_id.as_deref() == Some(workspace_id.as_str()) {
+                notification.unread = false;
+            }
+        }
 
         let unread_handles = if s.workspaces[idx].unread {
             let ws = &mut s.workspaces[idx];
@@ -7302,6 +7381,86 @@ fn mark_workspace_unread(
     )
 }
 
+fn live_notification_row(notification: &LiveNotification) -> serde_json::Value {
+    serde_json::json!({
+        "id": notification.id,
+        "notification_id": notification.id,
+        "message": notification.message,
+        "title": notification.title,
+        "subtitle": notification.subtitle,
+        "body": notification.body,
+        "surface_id": serde_json::Value::Null,
+        "workspace_id": notification.workspace_id.as_deref(),
+        "workspace_ref": notification.workspace_id.as_deref().map(workspace_ref),
+        "is_read": !notification.unread,
+        "unread": notification.unread,
+    })
+}
+
+fn live_notifications_payload(
+    notifications: &[LiveNotification],
+    unread_only: bool,
+) -> serde_json::Value {
+    let rows = notifications
+        .iter()
+        .filter(|notification| !unread_only || notification.unread)
+        .map(live_notification_row)
+        .collect::<Vec<_>>();
+    serde_json::json!({ "notifications": rows })
+}
+
+fn clear_workspace_unread_visuals(workspace: &mut Workspace) {
+    workspace.unread = false;
+    workspace.notify_dot.remove_css_class("limux-notify-dot");
+    workspace.notify_dot.add_css_class("limux-notify-dot-hidden");
+    workspace.notify_label.remove_css_class("limux-notify-msg-unread");
+    workspace.notify_label.add_css_class("limux-notify-msg");
+    workspace.notify_label.set_visible(false);
+    if let Some(row_box) = workspace.sidebar_row.child() {
+        row_box.remove_css_class("limux-sidebar-row-unread");
+    }
+}
+
+fn clear_workspace_unread_if_no_unread_notification(state: &mut AppState, workspace_id: &str) {
+    let has_unread = state.notifications.iter().any(|notification| {
+        notification.unread && notification.workspace_id.as_deref() == Some(workspace_id)
+    });
+    if has_unread {
+        return;
+    }
+
+    if let Some(workspace) = state
+        .workspaces
+        .iter_mut()
+        .find(|workspace| workspace.id == workspace_id)
+    {
+        clear_workspace_unread_visuals(workspace);
+    }
+}
+
+fn record_live_notification(
+    state: &mut AppState,
+    workspace_id: Option<String>,
+    message: String,
+    title: String,
+    subtitle: String,
+    body: String,
+) -> LiveNotification {
+    let id = state.next_notification_id;
+    state.next_notification_id = state.next_notification_id.saturating_add(1);
+    let notification = LiveNotification {
+        id,
+        message,
+        title,
+        subtitle,
+        body,
+        workspace_id,
+        unread: true,
+    };
+    state.notifications.push(notification.clone());
+    notification
+}
+
 fn workspace_notification_message(title: &str, body: &str) -> String {
     let title = title.trim();
     let body = body.trim();
@@ -7324,44 +7483,49 @@ fn mark_workspace_unread_with_message(
     let active_idx = s.active_idx;
     let window_active = s.window.is_active();
     let notifications = s.config.borrow().notifications;
-    if let Some((idx, ws)) = s
-        .workspaces
-        .iter_mut()
-        .enumerate()
-        .find(|(_, w)| w.id == ws_id)
-    {
-        let workspace_is_active = idx == active_idx;
-        let desktop_request = should_emit_desktop_notification(
-            notifications.enabled,
-            window_active,
-            workspace_is_active,
-            source_focused,
-        )
-        .then(|| DesktopNotificationRequest {
-            summary: ws.name.clone(),
-            body: message.to_string(),
-            sound: notifications.sound,
-            target: target.clone(),
-        });
+    let Some(idx) = s.workspaces.iter().position(|workspace| workspace.id == ws_id) else {
+        return None;
+    };
 
-        if idx != active_idx {
-            ws.unread = true;
-            ws.notify_dot.remove_css_class("limux-notify-dot-hidden");
-            ws.notify_dot.add_css_class("limux-notify-dot");
-            ws.notify_label.set_label(message);
-            ws.notify_label.remove_css_class("limux-notify-msg");
-            ws.notify_label.add_css_class("limux-notify-msg-unread");
-            ws.notify_label.set_visible(true);
-            // Add glow pulse to the sidebar row box
-            if let Some(row_box) = ws.sidebar_row.child() {
-                row_box.add_css_class("limux-sidebar-row-unread");
-            }
+    record_live_notification(
+        &mut s,
+        Some(ws_id.to_string()),
+        message.to_string(),
+        String::new(),
+        String::new(),
+        message.to_string(),
+    );
+
+    let workspace_is_active = idx == active_idx;
+    let desktop_request = should_emit_desktop_notification(
+        notifications.enabled,
+        window_active,
+        workspace_is_active,
+        source_focused,
+    )
+    .then(|| DesktopNotificationRequest {
+        summary: s.workspaces[idx].name.clone(),
+        body: message.to_string(),
+        sound: notifications.sound,
+        target: target.clone(),
+    });
+
+    if idx != active_idx {
+        let ws = &mut s.workspaces[idx];
+        ws.unread = true;
+        ws.notify_dot.remove_css_class("limux-notify-dot-hidden");
+        ws.notify_dot.add_css_class("limux-notify-dot");
+        ws.notify_label.set_label(message);
+        ws.notify_label.remove_css_class("limux-notify-msg");
+        ws.notify_label.add_css_class("limux-notify-msg-unread");
+        ws.notify_label.set_visible(true);
+        // Add glow pulse to the sidebar row box
+        if let Some(row_box) = ws.sidebar_row.child() {
+            row_box.add_css_class("limux-sidebar-row-unread");
         }
-
-        return desktop_request;
     }
 
-    None
+    desktop_request
 }
 
 fn desktop_notification_hints(
@@ -7471,7 +7635,7 @@ mod tests {
         use_opaque_window_background,
         validate_workspace_folder_input_with_dirs, workspace_drop_layout_path,
         workspace_folder_path_from_input, workspace_notification_message, browser_screenshot_path,
-        Direction,
+        live_notification_row, live_notifications_payload, Direction, LiveNotification,
         EditableCaptureContext, NeighborScore, PaneBounds, PaneCreateDirection,
         PaneCreateTargetError, PortalColorSchemePreference, SessionSaveAccess, SessionSaveRequest,
         WorkspaceSeedSource, BASE_CSS, HOST_ENTRY_CSS_CLASS, WORKSPACE_RENAME_ENTRY_CSS_CLASS,
@@ -7729,6 +7893,37 @@ mod tests {
         );
         assert!(BASE_CSS.contains(".limux-ws-rename-entry"));
         assert!(BASE_CSS.contains(".limux-ws-meta"));
+    }
+
+    #[test]
+    fn live_notification_payload_filters_unread_rows() {
+        let rows = vec![
+            LiveNotification {
+                id: 1,
+                message: "needs attention".to_string(),
+                title: "Codex".to_string(),
+                subtitle: String::new(),
+                body: "needs attention".to_string(),
+                workspace_id: Some("workspace-a".to_string()),
+                unread: true,
+            },
+            LiveNotification {
+                id: 2,
+                message: "read".to_string(),
+                title: String::new(),
+                subtitle: String::new(),
+                body: "read".to_string(),
+                workspace_id: None,
+                unread: false,
+            },
+        ];
+
+        let unread = live_notifications_payload(&rows, true);
+        assert_eq!(
+            unread["notifications"].as_array().expect("rows").len(),
+            1
+        );
+        assert_eq!(live_notification_row(&rows[0])["workspace_ref"], "workspace:workspace-a");
     }
 
     #[test]

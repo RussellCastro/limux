@@ -91,6 +91,8 @@ const METHODS: &[&str] = &[
     "browser.tab.switch",
     "browser.tab.close",
     "notification.create",
+    "notification.list",
+    "notification.clear",
 ];
 
 const PARSE_ERROR_CODE: i64 = -32700;
@@ -364,6 +366,14 @@ pub enum ControlCommand {
         body: String,
         reply: mpsc::Sender<BridgeResult>,
     },
+    ListNotifications {
+        unread_only: bool,
+        reply: mpsc::Sender<BridgeResult>,
+    },
+    ClearNotifications {
+        id: Option<u64>,
+        reply: mpsc::Sender<BridgeResult>,
+    },
 }
 
 impl ControlCommand {
@@ -415,7 +425,9 @@ impl ControlCommand {
             | Self::CloseWorkspace { reply, .. }
             | Self::SendText { reply, .. }
             | Self::SendKey { reply, .. }
-            | Self::CreateNotification { reply, .. } => {
+            | Self::CreateNotification { reply, .. }
+            | Self::ListNotifications { reply, .. }
+            | Self::ClearNotifications { reply, .. } => {
                 let _ = reply.send(result);
             }
         }
@@ -563,6 +575,37 @@ fn optional_index(params: &Map<String, Value>, key: &str) -> Result<Option<usize
     Err(BridgeError::invalid_params(format!(
         "{key} must be a non-negative integer"
     )))
+}
+
+fn optional_bool(params: &Map<String, Value>, keys: &[&str]) -> Result<Option<bool>, BridgeError> {
+    for key in keys {
+        let Some(value) = params.get(*key) else {
+            continue;
+        };
+        match value {
+            Value::Null => {}
+            Value::Bool(value) => return Ok(Some(*value)),
+            Value::String(raw) => {
+                let raw = raw.trim().to_ascii_lowercase();
+                if raw.is_empty() {
+                    continue;
+                }
+                return match raw.as_str() {
+                    "true" | "1" | "yes" => Ok(Some(true)),
+                    "false" | "0" | "no" => Ok(Some(false)),
+                    _ => Err(BridgeError::invalid_params(format!(
+                        "{key} must be a boolean"
+                    ))),
+                };
+            }
+            _ => {
+                return Err(BridgeError::invalid_params(format!(
+                    "{key} must be a boolean"
+                )));
+            }
+        }
+    }
+    Ok(None)
 }
 
 fn optional_u64(params: &Map<String, Value>, keys: &[&str]) -> Result<Option<u64>, BridgeError> {
@@ -1493,6 +1536,31 @@ fn handle_method(
                 rx,
             )
         }
+        "notification.list" | "notifications.list" | "list-notifications" => {
+            let unread_only = match optional_bool(params, &["unread_only", "unread"]) {
+                Ok(value) => value.unwrap_or(false),
+                Err(error) => return error_response(id, error),
+            };
+            let (reply, rx) = mpsc::channel();
+            (
+                ControlCommand::ListNotifications { unread_only, reply },
+                rx,
+            )
+        }
+        "notification.clear" | "notifications.clear" | "clear-notifications" => {
+            let clear_id = match optional_u64(params, &["id", "notification_id"]) {
+                Ok(value) => value,
+                Err(error) => return error_response(id, error),
+            };
+            let (reply, rx) = mpsc::channel();
+            (
+                ControlCommand::ClearNotifications {
+                    id: clear_id,
+                    reply,
+                },
+                rx,
+            )
+        }
         _ => {
             return error_response(
                 id,
@@ -2081,6 +2149,33 @@ mod tests {
 
         assert_eq!(response.error, None);
         assert_eq!(response.result.expect("result")["text"], "Limux");
+    }
+
+    #[test]
+    fn notification_list_and_clear_routes_parse_flags_and_ids() {
+        let listed = dispatch_request(
+            r#"{"id":1,"method":"notification.list","params":{"unread_only":true}}"#,
+            &|command| match command {
+                ControlCommand::ListNotifications { unread_only, reply } => {
+                    assert!(unread_only);
+                    let _ = reply.send(Ok(json!({ "notifications": [] })));
+                }
+                other => panic!("unexpected command: {other:?}"),
+            },
+        );
+        assert_eq!(listed.error, None);
+
+        let cleared = dispatch_request(
+            r#"{"id":2,"method":"notification.clear","params":{"notification_id":7}}"#,
+            &|command| match command {
+                ControlCommand::ClearNotifications { id, reply } => {
+                    assert_eq!(id, Some(7));
+                    let _ = reply.send(Ok(json!({ "notifications": [] })));
+                }
+                other => panic!("unexpected command: {other:?}"),
+            },
+        );
+        assert_eq!(cleared.error, None);
     }
 
     #[test]

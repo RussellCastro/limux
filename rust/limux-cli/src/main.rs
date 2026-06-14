@@ -199,7 +199,7 @@ fn parse_global_args() -> Result<GlobalOptions> {
 
 fn print_help() {
     println!(
-        "limux CLI\n\nUsage: limux [--socket <path>] [--json] [--id-format refs|both|uuids] <command> [args...]\n       limux\n\nRunning `limux` with no arguments launches the GTK app.\n\nCommon commands:\n  identify [--workspace <id|ref>] [--surface <id|ref>]\n  list-panels [--workspace <id|ref>]\n  list-panes [--workspace <id|ref>]\n  list-workspaces\n  surface-health [--workspace <id|ref>]\n  send [--workspace <id|ref>] [--surface <id|ref>] <text>\n  send-key [--workspace <id|ref>] [--surface <id|ref>] <key>\n  new-workspace [--cwd <path>] [--command <text>]\n  close-workspace --workspace <id|ref>\n  sidebar-state --workspace <id|ref>\n  new-surface [--workspace <id|ref>]\n  new-pane [--workspace <id|ref>] [--pane <id|ref>] [--surface <id|ref>] [--direction <left|right|up|down>] [--type <terminal|browser>] [--command <text>] [--url <url>]\n      Live GTK self-spawn currently supports terminal panes only; browser panes remain deferred.\n  rename-workspace [--workspace <id|ref>] <title>\n  rename-window [--workspace <id|ref>] <title>\n  rename-tab [--workspace <id|ref>] [--tab <id|ref>] <title>\n  read-screen [--workspace <id|ref>] [--surface <id|ref>] [--scrollback] [--lines <n>]\n  capture-pane (alias of read-screen)\n  tab-action --action <name> [--workspace <id|ref>] [--tab <id|ref>] [--title <text>] [--url <url>]\n  browser [--surface <id|ref>|<surface>] <subcommand> ...\n\nAgent integrations:\n  notify [--workspace <id|ref>] [--subtitle <text>] [--body <text>] <title>\n  hooks setup [agent] | hooks uninstall [agent] | hooks <agent> <event>\n  claude-hook | opencode-hook | gemini-hook --event <name> [--subtitle <text>] [--body <text>] [--title <text>]\n  agent-team [--agents codex,claude[,opencode,gemini]] [--cwd <path>] [--no-launch] [--dry-run]\n      Splits the active workspace into one pane per agent (caller's pane stays\n      as the orchestrator on the left, peers stack down the right), launches\n      each CLI in its pane, and writes AGENTS.md describing the <agent-msg>\n      XML protocol so peers can talk via\n      `limux send --surface <peer-surface-id> <envelope>`.\n"
+        "limux CLI\n\nUsage: limux [--socket <path>] [--json] [--id-format refs|both|uuids] <command> [args...]\n       limux\n\nRunning `limux` with no arguments launches the GTK app.\n\nCommon commands:\n  identify [--workspace <id|ref>] [--surface <id|ref>]\n  list-panels [--workspace <id|ref>]\n  list-panes [--workspace <id|ref>]\n  list-workspaces\n  surface-health [--workspace <id|ref>]\n  send [--workspace <id|ref>] [--surface <id|ref>] <text>\n  send-key [--workspace <id|ref>] [--surface <id|ref>] <key>\n  new-workspace [--cwd <path>] [--command <text>]\n  close-workspace --workspace <id|ref>\n  sidebar-state --workspace <id|ref>\n  new-surface [--workspace <id|ref>]\n  new-pane [--workspace <id|ref>] [--pane <id|ref>] [--surface <id|ref>] [--direction <left|right|up|down>] [--type <terminal|browser>] [--command <text>] [--url <url>]\n      Live GTK self-spawn currently supports terminal panes only; browser panes remain deferred.\n  rename-workspace [--workspace <id|ref>] <title>\n  rename-window [--workspace <id|ref>] <title>\n  rename-tab [--workspace <id|ref>] [--tab <id|ref>] <title>\n  read-screen [--workspace <id|ref>] [--surface <id|ref>] [--scrollback] [--lines <n>]\n  capture-pane (alias of read-screen)\n  tab-action --action <name> [--workspace <id|ref>] [--tab <id|ref>] [--title <text>] [--url <url>]\n  browser [--surface <id|ref>|<surface>] <subcommand> ...\n  list-notifications [--unread]\n  clear-notifications [--id <notification-id>]\n\nAgent integrations:\n  notify [--workspace <id|ref>] [--subtitle <text>] [--body <text>] <title>\n  hooks setup [agent] | hooks uninstall [agent] | hooks <agent> <event>\n  claude-hook | opencode-hook | gemini-hook --event <name> [--subtitle <text>] [--body <text>] [--title <text>]\n  agent-team [--agents codex,claude[,opencode,gemini]] [--cwd <path>] [--no-launch] [--dry-run]\n      Splits the active workspace into one pane per agent (caller's pane stays\n      as the orchestrator on the left, peers stack down the right), launches\n      each CLI in its pane, and writes AGENTS.md describing the <agent-msg>\n      XML protocol so peers can talk via\n      `limux send --surface <peer-surface-id> <envelope>`.\n"
     );
 }
 
@@ -797,6 +797,57 @@ async fn run_send_key(client: &mut Client, args: &[String]) -> Result<Value> {
     }
 
     call_in_workspace_scope(client, workspace, "surface.send_key", Value::Object(params)).await
+}
+
+async fn run_list_notifications(client: &mut Client, args: &[String]) -> Result<Value> {
+    let mut params = Map::new();
+    if parse_flag(args, "--unread") || parse_flag(args, "--unread-only") {
+        params.insert("unread_only".to_string(), Value::Bool(true));
+    }
+    client.call("notification.list", Value::Object(params)).await
+}
+
+async fn run_clear_notifications(client: &mut Client, args: &[String]) -> Result<Value> {
+    let mut params = Map::new();
+    if let Some(id) = parse_opt(args, "--id").or_else(|| parse_opt(args, "--notification-id")) {
+        let id = id
+            .parse::<u64>()
+            .map_err(|_| anyhow!("notification id must be a non-negative integer"))?;
+        params.insert("id".to_string(), Value::Number(id.into()));
+    }
+    client.call("notification.clear", Value::Object(params)).await
+}
+
+fn notification_rows_text(payload: &Value) -> String {
+    let rows = payload
+        .get("notifications")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if rows.is_empty() {
+        return "none".to_string();
+    }
+
+    rows.iter()
+        .map(|row| {
+            let id = row
+                .get("id")
+                .and_then(Value::as_u64)
+                .map(|id| id.to_string())
+                .or_else(|| get_string(row, &["id"]))
+                .unwrap_or_else(|| "?".to_string());
+            let unread = row.get("unread").and_then(Value::as_bool).unwrap_or(false);
+            let workspace = get_string(row, &["workspace_ref", "workspace_id"])
+                .unwrap_or_else(|| "none".to_string());
+            let message = get_string(row, &["message", "title", "body"])
+                .unwrap_or_else(|| "".to_string());
+            format!(
+                "id={} unread={} workspace={} message={}",
+                id, unread, workspace, message
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// `limux notify` — post a notification into the sidebar + toast overlay.
@@ -3573,6 +3624,22 @@ async fn execute_command(client: &mut Client, opts: &GlobalOptions) -> Result<Co
                 CommandOutput::Text("OK".to_string())
             }
         }
+        "list-notifications" | "notifications" => {
+            let payload = run_list_notifications(client, args).await?;
+            if opts.json_output {
+                CommandOutput::Json(payload)
+            } else {
+                CommandOutput::Text(notification_rows_text(&payload))
+            }
+        }
+        "clear-notifications" => {
+            let payload = run_clear_notifications(client, args).await?;
+            if opts.json_output {
+                CommandOutput::Json(payload)
+            } else {
+                CommandOutput::Text("OK".to_string())
+            }
+        }
         "claude-hook" | "opencode-hook" | "gemini-hook" => {
             let agent = match command {
                 "claude-hook" => agent_hooks::AgentKind::Claude,
@@ -3863,6 +3930,22 @@ mod cli_arg_tests {
         let dev = Path::new("/repo/target/debug/limux-cli");
         let candidates = host_binary_candidates(dev);
         assert!(candidates.contains(&PathBuf::from("/repo/target/debug/limux")));
+    }
+
+    #[test]
+    fn notification_rows_text_formats_empty_and_populated_lists() {
+        assert_eq!(notification_rows_text(&json!({ "notifications": [] })), "none");
+        assert_eq!(
+            notification_rows_text(&json!({
+                "notifications": [{
+                    "id": 7,
+                    "unread": true,
+                    "workspace_ref": "workspace:codex",
+                    "message": "Ready"
+                }]
+            })),
+            "id=7 unread=true workspace=workspace:codex message=Ready"
+        );
     }
 
     #[test]

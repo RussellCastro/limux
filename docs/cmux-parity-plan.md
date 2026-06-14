@@ -74,7 +74,9 @@ dispatcher parity.
 
 ### Phase 3 — `limux notify` + GUI toast/sidebar integration ✅
 `ControlCommand::CreateNotification` wired through the bridge into
-`mark_workspace_unread_with_message` + libadwaita toast.
+`mark_workspace_unread_with_message` + libadwaita toast. The live GTK bridge
+also exposes `notification.list` and `notification.clear`, with CLI coverage via
+`limux list-notifications [--unread]` and `limux clear-notifications [--id <n>]`.
 CLI: `limux notify [--workspace <id|name>] [--subtitle <…>] [--body <…>] <title>`.
 
 ### Phase 4 — `limux claude-hook` / `opencode-hook` / `gemini-hook` ✅
