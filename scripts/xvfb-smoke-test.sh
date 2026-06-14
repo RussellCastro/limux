@@ -223,9 +223,88 @@ else
   exit 1
 fi
 
-# --- 9. Stage 6: self-split pane.create + command injection ----------------
+# --- 9. Stage 6: custom commands + notification/sidebar APIs ---------------
 echo
-echo "== stage 6: pane.create self-split with exact-surface command =="
+echo "== stage 6: custom commands, notifications, and sidebar metadata =="
+PROJECT_COMMAND_PROOF="$DEMO_DIR/project-command-proof"
+cat > "$DEMO_DIR/cmux.json" <<SMOKE_COMMANDS
+{
+  "commands": {
+    "smoke-project": {
+      "label": "Smoke Project Command",
+      "command": "printf project-ok > '$PROJECT_COMMAND_PROOF'",
+      "cwd": "."
+    }
+  }
+}
+SMOKE_COMMANDS
+
+"$LIMUX_CLI" --json commands --project "$DEMO_DIR" \
+  2>&1 | tee "$LOG_DIR/stage6-commands.json"
+grep -q '"name"[[:space:]]*:[[:space:]]*"smoke-project"' "$LOG_DIR/stage6-commands.json" \
+  || { echo "FAIL: project command listing missing smoke-project"; exit 1; }
+grep -q 'Smoke Project Command' "$LOG_DIR/stage6-commands.json" \
+  || { echo "FAIL: project command listing missing label"; exit 1; }
+
+"$LIMUX_CLI" --id-format both --json run-command --project "$DEMO_DIR" smoke-project \
+  2>&1 | tee "$LOG_DIR/stage6-run-command.json"
+grep -q '"project_command"[[:space:]]*:[[:space:]]*"smoke-project"' "$LOG_DIR/stage6-run-command.json" \
+  || { echo "FAIL: run-command response missing project_command"; exit 1; }
+grep -q '"workspace_id"[[:space:]]*:[[:space:]]*"' "$LOG_DIR/stage6-run-command.json" \
+  || { echo "FAIL: run-command response missing workspace_id"; exit 1; }
+
+for _ in $(seq 1 50); do
+  if [ -f "$PROJECT_COMMAND_PROOF" ]; then
+    break
+  fi
+  sleep 0.1
+done
+[ -f "$PROJECT_COMMAND_PROOF" ] || { echo "FAIL: project command proof file missing"; exit 1; }
+[ "$(cat "$PROJECT_COMMAND_PROOF")" = "project-ok" ] || { echo "FAIL: project command proof file has unexpected content"; exit 1; }
+
+"$LIMUX_CLI" --json sidebar-state --workspace claude \
+  2>&1 | tee "$LOG_DIR/stage6-sidebar.json"
+grep -Fq "\"cwd\":\"$DEMO_DIR\"" "$LOG_DIR/stage6-sidebar.json" \
+  || { echo "FAIL: sidebar-state missing claude cwd"; exit 1; }
+grep -q '"unread"[[:space:]]*:[[:space:]]*true' "$LOG_DIR/stage6-sidebar.json" \
+  || { echo "FAIL: sidebar-state did not report unread=true after notify"; exit 1; }
+grep -q 'Smoke test' "$LOG_DIR/stage6-sidebar.json" \
+  || { echo "FAIL: sidebar-state missing latest notification text"; exit 1; }
+
+"$LIMUX_CLI" --json list-notifications --unread \
+  2>&1 | tee "$LOG_DIR/stage6-notifications-unread.json"
+grep -q '"title"[[:space:]]*:[[:space:]]*"Smoke test"' "$LOG_DIR/stage6-notifications-unread.json" \
+  || { echo "FAIL: unread notification list missing Smoke test"; exit 1; }
+grep -q '"unread"[[:space:]]*:[[:space:]]*true' "$LOG_DIR/stage6-notifications-unread.json" \
+  || { echo "FAIL: unread notification list did not report unread=true"; exit 1; }
+NOTIFICATION_ID="$(sed -n 's/.*"notification_id"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$LOG_DIR/stage6-notifications-unread.json" | head -1)"
+[ -n "$NOTIFICATION_ID" ] || { echo "FAIL: unread notification list missing notification_id"; exit 1; }
+
+"$LIMUX_CLI" --json jump-notification --id "$NOTIFICATION_ID" \
+  2>&1 | tee "$LOG_DIR/stage6-notification-jump.json"
+grep -q '"jumped"[[:space:]]*:[[:space:]]*true' "$LOG_DIR/stage6-notification-jump.json" \
+  || { echo "FAIL: jump-notification did not report jumped=true"; exit 1; }
+grep -q '"unread"[[:space:]]*:[[:space:]]*false' "$LOG_DIR/stage6-notification-jump.json" \
+  || { echo "FAIL: jumped notification did not become read"; exit 1; }
+
+"$LIMUX_CLI" --json list-notifications --unread \
+  2>&1 | tee "$LOG_DIR/stage6-notifications-after-jump.json"
+if grep -q 'Smoke test' "$LOG_DIR/stage6-notifications-after-jump.json"; then
+  echo "FAIL: unread notification list still contains jumped Smoke test notification"
+  exit 1
+fi
+
+"$LIMUX_CLI" --json clear-notifications --id "$NOTIFICATION_ID" \
+  2>&1 | tee "$LOG_DIR/stage6-notifications-clear.json"
+if grep -q 'Smoke test' "$LOG_DIR/stage6-notifications-clear.json"; then
+  echo "FAIL: clear-notifications did not remove Smoke test notification"
+  exit 1
+fi
+echo "stage 6: OK (project commands + notification list/jump/clear + sidebar-state)"
+
+# --- 10. Stage 7: self-split pane.create + command injection ---------------
+echo
+echo "== stage 7: pane.create self-split with exact-surface command =="
 SELF_SPLIT_PROOF="$DEMO_DIR/self-split-proof"
 SELF_SPLIT_ENV="$DEMO_DIR/self-split-env"
 SELF_SPLIT_CMD="printf split-ok > '$SELF_SPLIT_PROOF'; printf '%s\n%s\n%s\n' \"\$LIMUX_WORKSPACE_ID\" \"\$LIMUX_PANE_ID\" \"\$LIMUX_SURFACE_ID\" > '$SELF_SPLIT_ENV'"
@@ -234,11 +313,11 @@ SELF_SPLIT_CMD="printf split-ok > '$SELF_SPLIT_PROOF'; printf '%s\n%s\n%s\n' \"\
   --workspace claude \
   --direction right \
   --command "$SELF_SPLIT_CMD" \
-  2>&1 | tee "$LOG_DIR/stage6.json"
+  2>&1 | tee "$LOG_DIR/stage7-self-split.json"
 
-RESPONSE_WORKSPACE="$(sed -n 's/.*"workspace_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$LOG_DIR/stage6.json" | head -1)"
-RESPONSE_PANE="$(sed -n 's/.*"pane_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$LOG_DIR/stage6.json" | head -1)"
-RESPONSE_SURFACE="$(sed -n 's/.*"surface_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$LOG_DIR/stage6.json" | head -1)"
+RESPONSE_WORKSPACE="$(sed -n 's/.*"workspace_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$LOG_DIR/stage7-self-split.json" | head -1)"
+RESPONSE_PANE="$(sed -n 's/.*"pane_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$LOG_DIR/stage7-self-split.json" | head -1)"
+RESPONSE_SURFACE="$(sed -n 's/.*"surface_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$LOG_DIR/stage7-self-split.json" | head -1)"
 
 [ -n "$RESPONSE_WORKSPACE" ] || { echo "FAIL: pane.create response missing workspace_id"; exit 1; }
 [ -n "$RESPONSE_PANE" ] || { echo "FAIL: pane.create response missing pane_id"; exit 1; }
@@ -271,11 +350,11 @@ ENV_SURFACE="$(sed -n '3p' "$SELF_SPLIT_ENV")"
   echo "FAIL: spawned pane LIMUX_SURFACE_ID ($ENV_SURFACE) did not match response ($RESPONSE_SURFACE)"
   exit 1
 }
-echo "stage 6: OK (self-split command ran with fresh LIMUX_* env)"
+echo "stage 7: OK (self-split command ran with fresh LIMUX_* env)"
 
-# --- 10. Stage 7: live browser bridge -------------------------------------
+# --- 11. Stage 8: live browser bridge -------------------------------------
 echo
-echo "== stage 7: browser bridge open/wait/snapshot/find/action/screenshot =="
+echo "== stage 8: browser bridge open/wait/snapshot/find/action/screenshot =="
 BROWSER_SMOKE_HTML="$DEMO_DIR/browser-smoke.html"
 BROWSER_SHOT="$DEMO_DIR/browser-smoke.png"
 cat > "$BROWSER_SMOKE_HTML" <<'BROWSER_SMOKE'
@@ -297,60 +376,60 @@ cat > "$BROWSER_SMOKE_HTML" <<'BROWSER_SMOKE'
 BROWSER_SMOKE
 
 "$LIMUX_CLI" --id-format both --json browser open "file://$BROWSER_SMOKE_HTML" \
-  2>&1 | tee "$LOG_DIR/stage7-open.json"
-BROWSER_SURFACE="$(sed -n 's/.*"surface_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$LOG_DIR/stage7-open.json" | head -1)"
+  2>&1 | tee "$LOG_DIR/stage8-open.json"
+BROWSER_SURFACE="$(sed -n 's/.*"surface_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$LOG_DIR/stage8-open.json" | head -1)"
 [ -n "$BROWSER_SURFACE" ] || { echo "FAIL: browser open did not return surface_id"; exit 1; }
 
 "$LIMUX_CLI" --json browser "$BROWSER_SURFACE" wait --selector "#ready" --timeout-ms 5000 \
-  2>&1 | tee "$LOG_DIR/stage7-wait.json"
-grep -q '"ready"[[:space:]]*:[[:space:]]*true' "$LOG_DIR/stage7-wait.json" \
+  2>&1 | tee "$LOG_DIR/stage8-wait.json"
+grep -q '"ready"[[:space:]]*:[[:space:]]*true' "$LOG_DIR/stage8-wait.json" \
   || { echo "FAIL: browser wait did not report ready=true"; exit 1; }
 
 "$LIMUX_CLI" --json browser "$BROWSER_SURFACE" snapshot \
-  2>&1 | tee "$LOG_DIR/stage7-snapshot1.json"
-grep -q "Limux Browser Smoke" "$LOG_DIR/stage7-snapshot1.json" \
+  2>&1 | tee "$LOG_DIR/stage8-snapshot1.json"
+grep -q "Limux Browser Smoke" "$LOG_DIR/stage8-snapshot1.json" \
   || { echo "FAIL: browser snapshot missing page title/text"; exit 1; }
-grep -q '"frame_id"[[:space:]]*:[[:space:]]*"main"' "$LOG_DIR/stage7-snapshot1.json" \
+grep -q '"frame_id"[[:space:]]*:[[:space:]]*"main"' "$LOG_DIR/stage8-snapshot1.json" \
   || { echo "FAIL: browser snapshot missing main frame metadata"; exit 1; }
-grep -q '"element_ref"[[:space:]]*:[[:space:]]*"@e' "$LOG_DIR/stage7-snapshot1.json" \
+grep -q '"element_ref"[[:space:]]*:[[:space:]]*"@e' "$LOG_DIR/stage8-snapshot1.json" \
   || { echo "FAIL: browser snapshot missing stable element refs"; exit 1; }
 
 "$LIMUX_CLI" --json browser "$BROWSER_SURFACE" find text Ready \
-  2>&1 | tee "$LOG_DIR/stage7-find.json"
-READY_REF="$(sed -n 's/.*"element_ref"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$LOG_DIR/stage7-find.json" | head -1)"
+  2>&1 | tee "$LOG_DIR/stage8-find.json"
+READY_REF="$(sed -n 's/.*"element_ref"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$LOG_DIR/stage8-find.json" | head -1)"
 [ -n "$READY_REF" ] || { echo "FAIL: browser find text Ready did not return element_ref"; exit 1; }
 
 "$LIMUX_CLI" --json browser "$BROWSER_SURFACE" click "$READY_REF" \
-  2>&1 | tee "$LOG_DIR/stage7-click.json"
-grep -q '"ok"[[:space:]]*:[[:space:]]*true' "$LOG_DIR/stage7-click.json" \
+  2>&1 | tee "$LOG_DIR/stage8-click.json"
+grep -q '"ok"[[:space:]]*:[[:space:]]*true' "$LOG_DIR/stage8-click.json" \
   || { echo "FAIL: browser click did not report ok=true"; exit 1; }
 
 "$LIMUX_CLI" --json browser "$BROWSER_SURFACE" fill "#name" smoke \
-  2>&1 | tee "$LOG_DIR/stage7-fill.json"
-grep -q '"ok"[[:space:]]*:[[:space:]]*true' "$LOG_DIR/stage7-fill.json" \
+  2>&1 | tee "$LOG_DIR/stage8-fill.json"
+grep -q '"ok"[[:space:]]*:[[:space:]]*true' "$LOG_DIR/stage8-fill.json" \
   || { echo "FAIL: browser fill did not report ok=true"; exit 1; }
 
 "$LIMUX_CLI" --json browser "$BROWSER_SURFACE" get value "#name" \
-  2>&1 | tee "$LOG_DIR/stage7-value.json"
-grep -q '"value"[[:space:]]*:[[:space:]]*"smoke"' "$LOG_DIR/stage7-value.json" \
+  2>&1 | tee "$LOG_DIR/stage8-value.json"
+grep -q '"value"[[:space:]]*:[[:space:]]*"smoke"' "$LOG_DIR/stage8-value.json" \
   || { echo "FAIL: browser get value did not return filled text"; exit 1; }
 
 "$LIMUX_CLI" browser "$BROWSER_SURFACE" screenshot --out "$BROWSER_SHOT" \
-  2>&1 | tee "$LOG_DIR/stage7-screenshot.txt"
+  2>&1 | tee "$LOG_DIR/stage8-screenshot.txt"
 [ -s "$BROWSER_SHOT" ] || { echo "FAIL: browser screenshot did not write a non-empty PNG"; exit 1; }
-echo "stage 7: OK (browser bridge open/wait/snapshot/find/click/fill/get/screenshot)"
+echo "stage 8: OK (browser bridge open/wait/snapshot/find/click/fill/get/screenshot)"
 
-# --- 11. Stage 8: hook translators end-to-end -----------------------------
+# --- 12. Stage 9: hook translators end-to-end -----------------------------
 echo
-echo "== stage 8: claude-hook event translation =="
+echo "== stage 9: claude-hook event translation =="
 if echo '{"hook_event_name":"Notification","message":"hello from smoke"}' \
   | LIMUX_WORKSPACE_ID="" "$LIMUX_CLI" claude-hook 2>&1 \
-  | tee "$LOG_DIR/stage8.txt"; then
-  echo "stage 8: OK (claude-hook accepted JSON on stdin)"
+  | tee "$LOG_DIR/stage9.txt"; then
+  echo "stage 9: OK (claude-hook accepted JSON on stdin)"
 else
   # claude-hook legitimately errors without a workspace target — that's
   # a pass-through error, not a bridge regression. Surface the output.
-  echo "stage 8: claude-hook returned non-zero (check output)"
+  echo "stage 9: claude-hook returned non-zero (check output)"
 fi
 
 echo

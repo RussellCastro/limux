@@ -26,8 +26,9 @@ Limux has **two control servers**:
 
 When the GUI is running, the CLI targets the bridge via the runtime
 socket. `list-panes` / `list-panels`, terminal `new-pane --command ...`,
-text injection, key-level injection, `surface-health`, and terminal
-`read-screen` now work against the running host.
+text injection, key-level injection, `surface-health`, terminal
+`read-screen`, project-command launch through `workspace.create`,
+notification list/jump/clear, and `sidebar-state` now work against the running host.
 
 ## Delivery strategy (revised)
 
@@ -71,7 +72,7 @@ dispatcher parity.
 **Still open (priority order):**
 
 - Browser command bridge parity beyond the current slices: consent-gated profile-data import design before any native browser cookie database extraction/decryption, history/session import, full accessibility-tree parity, broader cookies/storage/tab/frame live smokes, and full cross-frame/platform refs.
-- Command palette live smoke coverage and a future shared CLI/host project-command parser.
+- Direct native command-palette activation smoke coverage and a future shared CLI/host project-command parser. CLI project-command discovery/launch is now covered by the Xvfb harness.
 - Remaining shortcut remapping parity decisions after the first-class `Ctrl+Shift+P` palette and `Ctrl+,` Settings/Keybindings shortcuts.
 
 ### Phase 3 — `limux notify` + GUI toast/sidebar integration ✅

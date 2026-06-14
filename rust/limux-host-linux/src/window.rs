@@ -8286,7 +8286,8 @@ fn jump_to_live_notification(
 ) -> Result<LiveNotification, crate::control_bridge::BridgeError> {
     let notification = {
         let mut app_state = state.borrow_mut();
-        let Some(notification) = select_live_notification(&app_state.notifications, id).cloned()
+        let Some(mut notification) =
+            select_live_notification(&app_state.notifications, id).cloned()
         else {
             return Err(crate::control_bridge::BridgeError::not_found(
                 "notification not found",
@@ -8311,6 +8312,7 @@ fn jump_to_live_notification(
             &mut app_state,
             &notification.target.workspace_id,
         );
+        notification.unread = false;
         notification
     };
 
