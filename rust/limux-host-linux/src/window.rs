@@ -21,6 +21,7 @@ use crate::layout_state::{
     self, AppSessionState, LayoutNodeState, LoadedSession, PaneState, WorkspaceState,
 };
 use crate::pane::{self, PaneCallbacks};
+use crate::settings_editor;
 use crate::shortcut_config::{
     self, EditableCapturePolicy, ResolvedShortcutConfig, ShortcutCommand, ShortcutId,
 };
@@ -2551,6 +2552,7 @@ fn dispatch_shortcut_command(state: &State, command: ShortcutCommand) -> bool {
             true
         }
         ShortcutCommand::NewInstance => spawn_new_instance(state),
+        ShortcutCommand::OpenSettings => open_settings_dialog(state),
         ShortcutCommand::ToggleSidebar => {
             toggle_sidebar(state);
             true
@@ -3261,6 +3263,61 @@ fn apply_appearance(
 ) {
     style_manager.set_color_scheme(adw_color_scheme_for(appearance.color_scheme));
     sync_ghostty_color_scheme_for_config(style_manager, system_prefers_dark, appearance);
+}
+
+fn handle_config_changed(
+    state: &State,
+    previous: &app_config::AppConfig,
+    updated: &app_config::AppConfig,
+) {
+    let style_manager = adw::StyleManager::default();
+    let system_prefers_dark = state.borrow().system_prefers_dark.get();
+    apply_appearance(&style_manager, system_prefers_dark, &updated.appearance);
+    if let Err(err) = app_config::save(updated) {
+        state.borrow().config.borrow_mut().clone_from(previous);
+        apply_appearance(&style_manager, system_prefers_dark, &previous.appearance);
+
+        let detail = format!("Failed to save Limux settings: {err}");
+        eprintln!("limux: {detail}");
+        show_runtime_error(state, "Failed to save settings", &detail);
+    }
+}
+
+fn settings_editor_input(state: &State) -> settings_editor::SettingsEditorInput {
+    let (config, shortcuts) = {
+        let s = state.borrow();
+        (s.config.clone(), s.shortcuts.clone())
+    };
+
+    let state_for_capture = state.clone();
+    let on_capture: Rc<
+        dyn Fn(
+            ShortcutId,
+            Option<shortcut_config::NormalizedShortcut>,
+        ) -> Result<ResolvedShortcutConfig, String>,
+    > = Rc::new(move |id, binding| persist_shortcut_binding(&state_for_capture, id, binding));
+
+    let state_for_config_changed = state.clone();
+    let on_config_changed: Rc<dyn Fn(&app_config::AppConfig, &app_config::AppConfig)> =
+        Rc::new(move |previous, updated| {
+            handle_config_changed(&state_for_config_changed, previous, updated);
+        });
+
+    settings_editor::SettingsEditorInput {
+        config,
+        shortcuts,
+        on_capture,
+        on_config_changed,
+    }
+}
+
+fn open_settings_dialog(state: &State) -> bool {
+    let parent = {
+        let s = state.borrow();
+        s.window.clone()
+    };
+    settings_editor::present_settings_dialog(&parent, settings_editor_input(state));
+    true
 }
 
 fn open_keybind_editor_tab(state: &State, pane_widget: &gtk::Widget) {
@@ -6383,26 +6440,7 @@ pub(crate) fn create_pane_for_workspace(
         }),
         on_config_changed: Rc::new(
             move |previous: &app_config::AppConfig, updated: &app_config::AppConfig| {
-                let style_manager = adw::StyleManager::default();
-                let system_prefers_dark =
-                    state_for_config_changed.borrow().system_prefers_dark.get();
-                apply_appearance(&style_manager, system_prefers_dark, &updated.appearance);
-                if let Err(err) = app_config::save(updated) {
-                    state_for_config_changed
-                        .borrow()
-                        .config
-                        .borrow_mut()
-                        .clone_from(previous);
-                    apply_appearance(&style_manager, system_prefers_dark, &previous.appearance);
-
-                    let detail = format!("Failed to save Limux settings: {err}");
-                    eprintln!("limux: {detail}");
-                    show_runtime_error(
-                        &state_for_config_changed,
-                        "Failed to save settings",
-                        &detail,
-                    );
-                }
+                handle_config_changed(&state_for_config_changed, previous, updated);
             },
         ),
         workspace_for_pane: Box::new(move |_pane_widget| Some(ws_id_for_env.clone())),
@@ -8463,6 +8501,14 @@ mod tests {
                 gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK
             ),
             Some(ShortcutCommand::JumpToNotification)
+        );
+        assert_eq!(
+            shortcut_command_from_key_event(
+                &shortcuts,
+                gdk::Key::comma,
+                gdk::ModifierType::CONTROL_MASK
+            ),
+            Some(ShortcutCommand::OpenSettings)
         );
     }
 

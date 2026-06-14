@@ -71,8 +71,8 @@ dispatcher parity.
 **Still open (priority order):**
 
 - Browser command bridge parity beyond the first live slice: browser profile import, full accessibility-tree parity, richer live smokes, and full frame-stable refs.
-- Command palette/settings parity and the remaining shortcut remapping decisions.
-- Native command palette integration for `cmux.json`/`limux.json` project commands; the CLI can already list and launch them through `workspace.create`.
+- Native command palette integration for built-in actions and `cmux.json`/`limux.json` project commands; the CLI can already list and launch project commands through `workspace.create`.
+- Remaining shortcut remapping parity decisions after the first-class `Ctrl+,` Settings/Keybindings shortcut.
 
 ### Phase 3 — `limux notify` + GUI toast/sidebar integration ✅
 `ControlCommand::CreateNotification` wired through the bridge into
@@ -85,7 +85,8 @@ unread source or a specific notification by id. Targeted notifications now also
 mark pane/tab attention CSS rings and clear them when the source is focused or
 notification state is cleared. The host shortcut registry maps `Ctrl+Alt+J` to
 the same latest-notification jump path, and the binding can be remapped through
-`shortcuts.json`.
+`shortcuts.json`. Settings/Keybindings also has a first-class remappable
+`Ctrl+,` shortcut so the settings surface is reachable without the pane toolbar.
 CLI: `limux notify [--workspace <id|name>] [--subtitle <…>] [--body <…>] <title>`.
 
 ### Phase 4 — `limux claude-hook` / `opencode-hook` / `gemini-hook` ✅

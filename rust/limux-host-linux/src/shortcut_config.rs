@@ -18,6 +18,7 @@ pub enum ShortcutId {
     CloseWorkspace,
     QuitApp,
     NewInstance,
+    OpenSettings,
     ToggleSidebar,
     ToggleTopBar,
     ToggleFullscreen,
@@ -72,6 +73,7 @@ pub enum ShortcutCommand {
     CloseWorkspace,
     QuitApp,
     NewInstance,
+    OpenSettings,
     ToggleSidebar,
     ToggleTopBar,
     ToggleFullscreen,
@@ -315,7 +317,7 @@ struct ShortcutConfigFile {
     shortcuts: HashMap<String, serde_json::Value>,
 }
 
-const SHORTCUT_DEFINITIONS: [ShortcutDefinition; 50] = [
+const SHORTCUT_DEFINITIONS: [ShortcutDefinition; 51] = [
     ShortcutDefinition {
         id: ShortcutId::NewWorkspace,
         config_key: "new_workspace",
@@ -358,6 +360,17 @@ const SHORTCUT_DEFINITIONS: [ShortcutDefinition; 50] = [
         registers_gtk_accel: true,
         command: ShortcutCommand::NewInstance,
         scope: ShortcutScope::AppGlobal,
+        editable_capture_policy: EditableCapturePolicy::AlwaysCapture,
+    },
+    ShortcutDefinition {
+        id: ShortcutId::OpenSettings,
+        config_key: "open_settings",
+        action_name: "win.open-settings",
+        default_accel: "<Ctrl>comma",
+        label: "Open Settings",
+        registers_gtk_accel: false,
+        command: ShortcutCommand::OpenSettings,
+        scope: ShortcutScope::Window,
         editable_capture_policy: EditableCapturePolicy::AlwaysCapture,
     },
     ShortcutDefinition {
@@ -1728,7 +1741,7 @@ mod tests {
 
     #[test]
     fn definitions_cover_current_host_shortcuts() {
-        assert_eq!(definitions().len(), 50);
+        assert_eq!(definitions().len(), 51);
     }
 
     #[test]
@@ -2238,6 +2251,10 @@ mod tests {
             resolved.command_for_runtime_combo("ctrl+alt+j"),
             Some(ShortcutCommand::JumpToNotification)
         );
+        assert_eq!(
+            resolved.command_for_runtime_combo("ctrl+comma"),
+            Some(ShortcutCommand::OpenSettings)
+        );
     }
 
     #[test]
@@ -2268,6 +2285,12 @@ mod tests {
                 .default_display_label_for_id(ShortcutId::CloseFocusedPane)
                 .as_deref(),
             Some("Ctrl+Alt+W")
+        );
+        assert_eq!(
+            resolved
+                .default_display_label_for_id(ShortcutId::OpenSettings)
+                .as_deref(),
+            Some("Ctrl+Comma")
         );
         assert_eq!(
             resolved

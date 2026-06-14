@@ -206,6 +206,7 @@ Most default shortcuts use `Ctrl`. Fullscreen defaults to `F11`. Custom remaps m
 |---|---|
 | `Ctrl+Q` | Quit Limux |
 | `Ctrl+Alt+N` | Open a new Limux instance |
+| `Ctrl+,` | Open settings and keybindings |
 | `F11` | Toggle fullscreen |
 
 ### Browser
