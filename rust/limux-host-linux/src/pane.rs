@@ -414,33 +414,137 @@ fn browser_ref_key(raw: &str) -> Option<String> {
 }
 
 #[cfg(feature = "webkit")]
-fn store_browser_refs(
+fn remember_snapshot_refs(
     refs: &Rc<RefCell<std::collections::HashMap<String, String>>>,
     next_ref: &Rc<Cell<u32>>,
-    value: &serde_json::Value,
-) {
-    let Some(snapshot_refs) = value.get("refs").and_then(serde_json::Value::as_object) else {
-        return;
+    mut value: serde_json::Value,
+) -> serde_json::Value {
+    let Some(snapshot_refs) = value
+        .get("refs")
+        .and_then(serde_json::Value::as_object)
+        .cloned()
+    else {
+        return value;
     };
+
     let mut stored = refs.borrow_mut();
-    let mut max_seen = next_ref.get();
-    for (key, entry) in snapshot_refs {
+    let mut key_map = std::collections::HashMap::<String, String>::new();
+    for (raw_key, entry) in &snapshot_refs {
         let Some(selector) = entry.get("selector").and_then(serde_json::Value::as_str) else {
             continue;
         };
         if selector.trim().is_empty() {
             continue;
         }
-        let key = key.trim().trim_start_matches('@').to_string();
-        if let Some(index) = key
-            .strip_prefix('e')
-            .and_then(|raw| raw.parse::<u32>().ok())
+        let raw_key = raw_key.trim().trim_start_matches('@').to_string();
+        let stable_key = if selector == "document" {
+            "e1".to_string()
+        } else if let Some(existing) = stored
+            .iter()
+            .find_map(|(key, stored_selector)| {
+                (stored_selector.as_str() == selector).then(|| key.clone())
+            })
         {
-            max_seen = max_seen.max(index.saturating_add(1));
-        }
-        stored.insert(key, selector.to_string());
+            existing
+        } else {
+            let index = next_ref.get().max(2);
+            next_ref.set(index.saturating_add(1));
+            format!("e{index}")
+        };
+        stored.insert(stable_key.clone(), selector.to_string());
+        key_map.insert(raw_key, stable_key);
     }
-    next_ref.set(max_seen.max(2));
+    drop(stored);
+
+    if let Some(map) = value.as_object_mut() {
+        let mut rewritten_refs = serde_json::Map::new();
+        for (raw_key, entry) in snapshot_refs {
+            let raw_key = raw_key.trim().trim_start_matches('@').to_string();
+            let stable_key = key_map.get(&raw_key).cloned().unwrap_or(raw_key);
+            let mut entry = entry;
+            if let Some(entry_map) = entry.as_object_mut() {
+                entry_map.insert(
+                    "ref".to_string(),
+                    serde_json::Value::String(stable_key.clone()),
+                );
+                entry_map.insert(
+                    "element_ref".to_string(),
+                    serde_json::Value::String(format!("@{stable_key}")),
+                );
+            }
+            rewritten_refs.insert(stable_key, entry);
+        }
+        map.insert("refs".to_string(), serde_json::Value::Object(rewritten_refs));
+
+        if let Some(nodes) = map.get_mut("nodes").and_then(serde_json::Value::as_array_mut) {
+            for node in nodes {
+                let raw_ref = node
+                    .get("ref")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|value| value.trim().trim_start_matches('@').to_string());
+                let Some(raw_ref) = raw_ref else {
+                    continue;
+                };
+                let Some(stable_key) = key_map.get(&raw_ref) else {
+                    continue;
+                };
+                if let Some(node_map) = node.as_object_mut() {
+                    node_map.insert(
+                        "ref".to_string(),
+                        serde_json::Value::String(stable_key.clone()),
+                    );
+                    node_map.insert(
+                        "element_ref".to_string(),
+                        serde_json::Value::String(format!("@{stable_key}")),
+                    );
+                }
+            }
+        }
+
+        if let Some(snapshot) = map
+            .get("snapshot")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned)
+        {
+            let mut snapshot = snapshot;
+            let mut pairs = key_map.into_iter().collect::<Vec<_>>();
+            pairs.sort_by_key(|(raw_key, _)| std::cmp::Reverse(raw_key.len()));
+            for (raw_key, stable_key) in pairs {
+                snapshot = snapshot.replace(
+                    &format!("ref={raw_key} "),
+                    &format!("ref={stable_key} "),
+                );
+            }
+            map.insert("snapshot".to_string(), serde_json::Value::String(snapshot));
+        }
+    }
+    value
+}
+
+#[cfg(feature = "webkit")]
+fn insert_browser_frame_metadata(value: &mut serde_json::Value, frame_selector: Option<&str>) {
+    let Some(map) = value.as_object_mut() else {
+        return;
+    };
+    match frame_selector {
+        Some(selector) => {
+            map.insert(
+                "frame_id".to_string(),
+                serde_json::Value::String(selector.to_string()),
+            );
+            map.insert(
+                "frame_selector".to_string(),
+                serde_json::Value::String(selector.to_string()),
+            );
+        }
+        None => {
+            map.insert(
+                "frame_id".to_string(),
+                serde_json::Value::String("main".to_string()),
+            );
+            map.insert("frame_selector".to_string(), serde_json::Value::Null);
+        }
+    }
 }
 
 #[cfg(feature = "webkit")]
@@ -460,6 +564,7 @@ fn resolve_browser_selector(
 fn remember_find_result(
     refs: &Rc<RefCell<std::collections::HashMap<String, String>>>,
     next_ref: &Rc<Cell<u32>>,
+    frame_selector: Option<String>,
     mut value: serde_json::Value,
 ) -> serde_json::Value {
     let selector = value
@@ -510,6 +615,7 @@ fn remember_find_result(
         map.insert("ref".to_string(), serde_json::Value::String(key));
         map.insert("refs".to_string(), serde_json::Value::Object(refs_payload));
     }
+    insert_browser_frame_metadata(&mut value, frame_selector.as_deref());
     value
 }
 
@@ -4665,13 +4771,18 @@ impl BrowserHandles {
     fn snapshot(&self, on_result: impl FnOnce(Result<serde_json::Value, String>) + 'static) {
         let refs = self.automation_refs.clone();
         let next_ref = self.automation_ref_next.clone();
-        self.evaluate_javascript(self.scoped_script(BROWSER_SNAPSHOT_SCRIPT.to_string()), move |result| {
+        let frame_selector = self.current_frame_selector();
+        self.evaluate_javascript(
+            self.scoped_script(BROWSER_SNAPSHOT_SCRIPT.to_string()),
+            move |result| {
             let result = parse_browser_json_value("browser.snapshot", result).map(|value| {
-                store_browser_refs(&refs, &next_ref, &value);
+                let mut value = remember_snapshot_refs(&refs, &next_ref, value);
+                insert_browser_frame_metadata(&mut value, frame_selector.as_deref());
                 value
             });
             on_result(result);
-        });
+        },
+        );
     }
 
     fn screenshot(
@@ -4751,11 +4862,16 @@ impl BrowserHandles {
     ) {
         let refs = self.automation_refs.clone();
         let next_ref = self.automation_ref_next.clone();
-        self.evaluate_javascript(self.scoped_script(browser_find_script(&locator, &value, index)), move |result| {
-            let result = parse_browser_json_value("browser.find", result)
-                .map(|value| remember_find_result(&refs, &next_ref, value));
-            on_result(result);
-        });
+        let frame_selector = self.current_frame_selector();
+        self.evaluate_javascript(
+            self.scoped_script(browser_find_script(&locator, &value, index)),
+            move |result| {
+                let result = parse_browser_json_value("browser.find", result).map(|value| {
+                    remember_find_result(&refs, &next_ref, frame_selector.clone(), value)
+                });
+                on_result(result);
+            },
+        );
     }
 
     fn get(
