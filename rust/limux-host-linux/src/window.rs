@@ -270,10 +270,164 @@ fn git_branch_for_cwd(cwd: &str) -> Option<String> {
     (!branch.is_empty()).then_some(branch)
 }
 
+fn linked_pr_for_cwd(cwd: &str) -> Option<serde_json::Value> {
+    let cwd = cwd.trim();
+    if cwd.is_empty() || cwd == "none" {
+        return None;
+    }
+
+    let output = std::process::Command::new("gh")
+        .arg("pr")
+        .arg("view")
+        .arg("--json")
+        .arg("number,title,state,url,headRefName,isDraft,reviewDecision")
+        .current_dir(cwd)
+        .output()
+        .ok()?;
+    if !output.status.success() || output.stdout.is_empty() {
+        return None;
+    }
+
+    let pr: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    pr.get("number").and_then(serde_json::Value::as_u64)?;
+    Some(pr)
+}
+
+fn pr_status_for_linked_pr(pr: &serde_json::Value) -> String {
+    if pr
+        .get("isDraft")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+    {
+        return "draft".to_string();
+    }
+
+    pr.get("state")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|state| !state.is_empty())
+        .map(|state| state.to_ascii_lowercase())
+        .unwrap_or_else(|| "linked".to_string())
+}
+
+fn ss_line_listening_port(line: &str) -> Option<u16> {
+    let mut columns = line.split_whitespace();
+    if columns.next()? != "LISTEN" {
+        return None;
+    }
+    let _recv_q = columns.next()?;
+    let _send_q = columns.next()?;
+    let local_address = columns.next()?;
+    socket_address_port(local_address)
+}
+
+fn socket_address_port(address: &str) -> Option<u16> {
+    let address = address.trim();
+    let port = address
+        .rsplit_once(':')
+        .map(|(_, port)| port)
+        .unwrap_or(address);
+    port.trim_matches(|ch| ch == '[' || ch == ']').parse().ok()
+}
+
+fn ss_line_pids(line: &str) -> Vec<u32> {
+    let mut cursor = line;
+    let mut pids = Vec::new();
+    while let Some(offset) = cursor.find("pid=") {
+        let after = &cursor[offset + 4..];
+        let digits: String = after
+            .chars()
+            .take_while(|ch| ch.is_ascii_digit())
+            .collect();
+        if let Ok(pid) = digits.parse::<u32>() {
+            if !pids.contains(&pid) {
+                pids.push(pid);
+            }
+        }
+        cursor = after;
+    }
+    pids
+}
+
+fn ss_line_process_name(line: &str) -> Option<String> {
+    let users = line.find("users:")?;
+    let after_users = &line[users..];
+    let first_quote = after_users.find('"')?;
+    let after_quote = &after_users[first_quote + 1..];
+    let end_quote = after_quote.find('"')?;
+    let process = after_quote[..end_quote].trim();
+    (!process.is_empty()).then(|| process.to_string())
+}
+
+fn process_cwd_matches(pid: u32, workspace_cwd: &Path) -> bool {
+    std::fs::read_link(format!("/proc/{pid}/cwd"))
+        .ok()
+        .map(|process_cwd| process_cwd.starts_with(workspace_cwd))
+        .unwrap_or(false)
+}
+
+fn listening_ports_for_cwd(cwd: &str) -> Vec<serde_json::Value> {
+    let cwd = cwd.trim();
+    if cwd.is_empty() || cwd == "none" {
+        return Vec::new();
+    }
+
+    let Ok(workspace_cwd) = Path::new(cwd).canonicalize() else {
+        return Vec::new();
+    };
+    let Ok(output) = std::process::Command::new("ss")
+        .args(["-H", "-ltnp"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut rows = Vec::new();
+    for line in stdout.lines() {
+        let Some(port) = ss_line_listening_port(line) else {
+            continue;
+        };
+        let pids = ss_line_pids(line);
+        if pids.is_empty()
+            || !pids
+                .iter()
+                .any(|pid| process_cwd_matches(*pid, &workspace_cwd))
+        {
+            continue;
+        }
+
+        let address = line
+            .split_whitespace()
+            .nth(3)
+            .unwrap_or_default()
+            .to_string();
+        let process = ss_line_process_name(line).unwrap_or_else(|| "unknown".to_string());
+        rows.push(serde_json::json!({
+            "port": port,
+            "protocol": "tcp",
+            "address": address,
+            "process": process,
+            "pids": pids,
+            "source": "ss",
+        }));
+
+        if rows.len() >= 16 {
+            break;
+        }
+    }
+    rows
+}
+
 fn sidebar_state_payload(
     state: &AppState,
     index: usize,
     git_branch: Option<String>,
+    linked_pr: Option<serde_json::Value>,
+    ports: Vec<serde_json::Value>,
 ) -> Option<serde_json::Value> {
     let workspace = state.workspaces.get(index)?;
     let cwd = workspace
@@ -292,6 +446,19 @@ fn sidebar_state_payload(
     } else {
         "none".to_string()
     };
+    let pr_status = linked_pr
+        .as_ref()
+        .map(pr_status_for_linked_pr)
+        .unwrap_or_else(|| "none".to_string());
+    let pr_number = linked_pr
+        .as_ref()
+        .and_then(|pr| pr.get("number").and_then(serde_json::Value::as_u64));
+    let pr_url = linked_pr.as_ref().and_then(|pr| {
+        pr.get("url")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned)
+    });
+    let linked_pr = linked_pr.unwrap_or(serde_json::Value::Null);
 
     Some(serde_json::json!({
         "workspace_id": workspace.id.as_str(),
@@ -306,9 +473,11 @@ fn sidebar_state_payload(
         "unread": workspace.unread,
         "latest_notification": latest_notification.clone(),
         "notification_text": latest_notification,
-        "ports": [],
-        "linked_pr": serde_json::Value::Null,
-        "pr_status": "none",
+        "ports": ports,
+        "linked_pr": linked_pr,
+        "pr_number": pr_number,
+        "pr_url": pr_url,
+        "pr_status": pr_status,
     }))
 }
 
@@ -4141,9 +4310,14 @@ fn handle_control_command(state: &State, command: ControlCommand) {
                     .filter(|cwd| !cwd.trim().is_empty())
             };
             let git_branch = cwd.as_deref().and_then(git_branch_for_cwd);
+            let linked_pr = cwd.as_deref().and_then(linked_pr_for_cwd);
+            let ports = cwd
+                .as_deref()
+                .map(listening_ports_for_cwd)
+                .unwrap_or_default();
             let result = {
                 let app_state = state.borrow();
-                sidebar_state_payload(&app_state, index, git_branch)
+                sidebar_state_payload(&app_state, index, git_branch, linked_pr, ports)
             };
             let _ = reply.send(result.ok_or_else(|| {
                 crate::control_bridge::BridgeError::not_found("workspace not found")
@@ -7089,8 +7263,9 @@ mod tests {
         pane_create_split_placement, queue_session_save_request, resolve_pane_create_source_id,
         resolved_system_prefers_dark, sanitize_background_opacity,
         shortcut_allowed_while_browser_find_active, shortcut_blocked_by_editable,
-        shortcut_command_from_key_event, shortcut_dispatch_propagation,
-        should_emit_desktop_notification, tab_drag_workspace_seed, use_opaque_window_background,
+        pr_status_for_linked_pr, shortcut_command_from_key_event, shortcut_dispatch_propagation,
+        should_emit_desktop_notification, socket_address_port, ss_line_listening_port,
+        ss_line_pids, ss_line_process_name, tab_drag_workspace_seed, use_opaque_window_background,
         validate_workspace_folder_input_with_dirs, workspace_drop_layout_path,
         workspace_folder_path_from_input, workspace_notification_message, Direction,
         EditableCaptureContext, NeighborScore, PaneBounds, PaneCreateDirection,
@@ -7349,6 +7524,34 @@ mod tests {
             [HOST_ENTRY_CSS_CLASS, WORKSPACE_RENAME_ENTRY_CSS_CLASS]
         );
         assert!(BASE_CSS.contains(".limux-ws-rename-entry"));
+    }
+
+    #[test]
+    fn ss_line_parsers_extract_listening_port_process_and_pids() {
+        let line = r#"LISTEN 0 4096 127.0.0.1:5173 0.0.0.0:* users:(("node",pid=1234,fd=23),("vite",pid=5678,fd=2))"#;
+
+        assert_eq!(ss_line_listening_port(line), Some(5173));
+        assert_eq!(socket_address_port("[::1]:3000"), Some(3000));
+        assert_eq!(ss_line_process_name(line).as_deref(), Some("node"));
+        assert_eq!(ss_line_pids(line), vec![1234, 5678]);
+    }
+
+    #[test]
+    fn linked_pr_status_prefers_draft_then_state() {
+        assert_eq!(
+            pr_status_for_linked_pr(&serde_json::json!({
+                "isDraft": true,
+                "state": "OPEN"
+            })),
+            "draft"
+        );
+        assert_eq!(
+            pr_status_for_linked_pr(&serde_json::json!({
+                "isDraft": false,
+                "state": "MERGED"
+            })),
+            "merged"
+        );
     }
 
     #[test]

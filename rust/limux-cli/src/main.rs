@@ -3643,9 +3643,36 @@ async fn execute_command(client: &mut Client, opts: &GlobalOptions) -> Result<Co
                 let unread = payload.get("unread").and_then(Value::as_bool).unwrap_or(false);
                 let latest_notification = get_string(&payload, &["latest_notification"])
                     .unwrap_or_else(|| "none".to_string());
+                let pr_number = payload
+                    .get("pr_number")
+                    .and_then(Value::as_u64)
+                    .map(|number| number.to_string())
+                    .unwrap_or_else(|| "none".to_string());
+                let pr_status =
+                    get_string(&payload, &["pr_status"]).unwrap_or_else(|| "none".to_string());
+                let ports = payload
+                    .get("ports")
+                    .and_then(Value::as_array)
+                    .map(|ports| {
+                        ports
+                            .iter()
+                            .filter_map(|port| port.get("port").and_then(Value::as_u64))
+                            .map(|port| port.to_string())
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    })
+                    .filter(|ports| !ports.is_empty())
+                    .unwrap_or_else(|| "none".to_string());
                 CommandOutput::Text(format!(
-                    "workspace={}\ncwd={}\ngit_branch={}\nunread={}\nlatest_notification={}",
-                    workspace, cwd, git_branch, unread, latest_notification
+                    "workspace={}\ncwd={}\ngit_branch={}\nunread={}\nlatest_notification={}\npr_number={}\npr_status={}\nports={}",
+                    workspace,
+                    cwd,
+                    git_branch,
+                    unread,
+                    latest_notification,
+                    pr_number,
+                    pr_status,
+                    ports
                 ))
             }
         }
