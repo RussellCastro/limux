@@ -95,6 +95,12 @@ const METHODS: &[&str] = &[
     "notification.list",
     "notification.clear",
     "notification.jump",
+    "debug.shortcut.simulate",
+    "debug.command_palette.toggle",
+    "debug.command_palette.visible",
+    "debug.command_palette.results",
+    "debug.notification_panel.visible",
+    "debug.notification_panel.close",
 ];
 
 const PARSE_ERROR_CODE: i64 = -32700;
@@ -381,6 +387,27 @@ pub enum ControlCommand {
         id: Option<u64>,
         reply: mpsc::Sender<BridgeResult>,
     },
+    DebugShortcutSimulate {
+        action: Option<String>,
+        combo: Option<String>,
+        reply: mpsc::Sender<BridgeResult>,
+    },
+    DebugCommandPaletteToggle {
+        reply: mpsc::Sender<BridgeResult>,
+    },
+    DebugCommandPaletteVisible {
+        reply: mpsc::Sender<BridgeResult>,
+    },
+    DebugCommandPaletteResults {
+        limit: usize,
+        reply: mpsc::Sender<BridgeResult>,
+    },
+    DebugNotificationPanelVisible {
+        reply: mpsc::Sender<BridgeResult>,
+    },
+    DebugNotificationPanelClose {
+        reply: mpsc::Sender<BridgeResult>,
+    },
 }
 
 impl ControlCommand {
@@ -435,7 +462,13 @@ impl ControlCommand {
             | Self::CreateNotification { reply, .. }
             | Self::ListNotifications { reply, .. }
             | Self::ClearNotifications { reply, .. }
-            | Self::JumpNotification { reply, .. } => {
+            | Self::JumpNotification { reply, .. }
+            | Self::DebugShortcutSimulate { reply, .. }
+            | Self::DebugCommandPaletteToggle { reply }
+            | Self::DebugCommandPaletteVisible { reply }
+            | Self::DebugCommandPaletteResults { reply, .. }
+            | Self::DebugNotificationPanelVisible { reply }
+            | Self::DebugNotificationPanelClose { reply } => {
                 let _ = reply.send(result);
             }
         }
@@ -1608,6 +1641,44 @@ fn handle_method(
             let (reply, rx) = mpsc::channel();
             (ControlCommand::JumpNotification { id: jump_id, reply }, rx)
         }
+        "debug.shortcut.simulate" => {
+            let (reply, rx) = mpsc::channel();
+            (
+                ControlCommand::DebugShortcutSimulate {
+                    action: optional_string(params, &["action", "command", "name"]),
+                    combo: optional_string(params, &["combo", "shortcut", "binding"]),
+                    reply,
+                },
+                rx,
+            )
+        }
+        "debug.command_palette.toggle" => {
+            let (reply, rx) = mpsc::channel();
+            (ControlCommand::DebugCommandPaletteToggle { reply }, rx)
+        }
+        "debug.command_palette.visible" => {
+            let (reply, rx) = mpsc::channel();
+            (ControlCommand::DebugCommandPaletteVisible { reply }, rx)
+        }
+        "debug.command_palette.results" => {
+            let limit = match optional_u64(params, &["limit"]) {
+                Ok(value) => value.unwrap_or(20).min(100) as usize,
+                Err(error) => return error_response(id, error),
+            };
+            let (reply, rx) = mpsc::channel();
+            (
+                ControlCommand::DebugCommandPaletteResults { limit, reply },
+                rx,
+            )
+        }
+        "debug.notification_panel.visible" => {
+            let (reply, rx) = mpsc::channel();
+            (ControlCommand::DebugNotificationPanelVisible { reply }, rx)
+        }
+        "debug.notification_panel.close" => {
+            let (reply, rx) = mpsc::channel();
+            (ControlCommand::DebugNotificationPanelClose { reply }, rx)
+        }
         _ => {
             return error_response(
                 id,
@@ -2241,6 +2312,66 @@ mod tests {
             },
         );
         assert_eq!(jumped.error, None);
+    }
+
+    #[test]
+    fn debug_panel_routes_queue_live_bridge_commands() {
+        let shortcut = dispatch_request(
+            r#"{"id":1,"method":"debug.shortcut.simulate","params":{"action":"open_command_palette"}}"#,
+            &|command| match command {
+                ControlCommand::DebugShortcutSimulate {
+                    action,
+                    combo,
+                    reply,
+                } => {
+                    assert_eq!(action, Some("open_command_palette".to_string()));
+                    assert_eq!(combo, None);
+                    let _ = reply.send(Ok(json!({ "handled": true })));
+                }
+                other => panic!("unexpected command: {other:?}"),
+            },
+        );
+        assert_eq!(shortcut.error, None);
+
+        let combo = dispatch_request(
+            r#"{"id":2,"method":"debug.shortcut.simulate","params":{"combo":"ctrl+alt+o"}}"#,
+            &|command| match command {
+                ControlCommand::DebugShortcutSimulate {
+                    action,
+                    combo,
+                    reply,
+                } => {
+                    assert_eq!(action, None);
+                    assert_eq!(combo, Some("ctrl+alt+o".to_string()));
+                    let _ = reply.send(Ok(json!({ "handled": true })));
+                }
+                other => panic!("unexpected command: {other:?}"),
+            },
+        );
+        assert_eq!(combo.error, None);
+
+        let results = dispatch_request(
+            r#"{"id":3,"method":"debug.command_palette.results","params":{"limit":80}}"#,
+            &|command| match command {
+                ControlCommand::DebugCommandPaletteResults { limit, reply } => {
+                    assert_eq!(limit, 80);
+                    let _ = reply.send(Ok(json!({ "results": [] })));
+                }
+                other => panic!("unexpected command: {other:?}"),
+            },
+        );
+        assert_eq!(results.error, None);
+
+        let panel = dispatch_request(
+            r#"{"id":4,"method":"debug.notification_panel.close","params":{}}"#,
+            &|command| match command {
+                ControlCommand::DebugNotificationPanelClose { reply } => {
+                    let _ = reply.send(Ok(json!({ "visible": false })));
+                }
+                other => panic!("unexpected command: {other:?}"),
+            },
+        );
+        assert_eq!(panel.error, None);
     }
 
     #[test]

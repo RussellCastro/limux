@@ -164,6 +164,8 @@ pub(crate) struct AppState {
     next_notification_id: u64,
     notifications: Vec<LiveNotification>,
     desktop_notification_routes: HashMap<u32, DesktopNotificationRoute>,
+    command_palette_window: Option<gtk::Window>,
+    notification_panel_window: Option<gtk::Window>,
     _theme_portal_signal: Option<gio::SignalSubscription>,
     _theme_gnome_settings: Option<gio::Settings>,
     _theme_gnome_signal: Option<glib::SignalHandlerId>,
@@ -2100,6 +2102,8 @@ pub fn build_window(app: &adw::Application) {
         next_notification_id: 1,
         notifications: Vec::new(),
         desktop_notification_routes: HashMap::new(),
+        command_palette_window: None,
+        notification_panel_window: None,
         _theme_portal_signal: None,
         _theme_gnome_settings: None,
         _theme_gnome_signal: None,
@@ -3419,6 +3423,16 @@ struct NotificationPanelRowData {
 }
 
 fn open_notification_panel(state: &State) -> bool {
+    if let Some(existing) = state
+        .borrow()
+        .notification_panel_window
+        .clone()
+        .filter(|window| window.is_visible())
+    {
+        existing.present();
+        return true;
+    }
+
     let window = gtk::Window::builder()
         .title("Notifications")
         .modal(true)
@@ -3427,6 +3441,14 @@ fn open_notification_panel(state: &State) -> bool {
         .build();
     if let Some(parent) = active_window(state) {
         window.set_transient_for(Some(&parent));
+    }
+    {
+        let state = state.clone();
+        window.connect_hide(move |_| {
+            if let Ok(mut app_state) = state.try_borrow_mut() {
+                app_state.notification_panel_window = None;
+            }
+        });
     }
 
     let outer = gtk::Box::builder()
@@ -3518,6 +3540,7 @@ fn open_notification_panel(state: &State) -> bool {
         window.add_controller(key_controller);
     }
 
+    state.borrow_mut().notification_panel_window = Some(window.clone());
     window.present();
     true
 }
@@ -3710,6 +3733,16 @@ fn notification_panel_body(notification: &LiveNotification) -> Option<String> {
 }
 
 fn open_command_palette(state: &State) -> bool {
+    if let Some(existing) = state
+        .borrow()
+        .command_palette_window
+        .clone()
+        .filter(|window| window.is_visible())
+    {
+        existing.present();
+        return true;
+    }
+
     let entries = Rc::new(command_palette_entries(state));
     let visible_actions = Rc::new(RefCell::new(Vec::<CommandPaletteAction>::new()));
 
@@ -3721,6 +3754,14 @@ fn open_command_palette(state: &State) -> bool {
         .build();
     if let Some(parent) = active_window(state) {
         window.set_transient_for(Some(&parent));
+    }
+    {
+        let state = state.clone();
+        window.connect_hide(move |_| {
+            if let Ok(mut app_state) = state.try_borrow_mut() {
+                app_state.command_palette_window = None;
+            }
+        });
     }
 
     let outer = gtk::Box::builder()
@@ -3837,6 +3878,7 @@ fn open_command_palette(state: &State) -> bool {
         window.add_controller(key_controller);
     }
 
+    state.borrow_mut().command_palette_window = Some(window.clone());
     window.present();
     search.grab_focus();
     true
@@ -4026,6 +4068,214 @@ fn command_palette_entry_matches(entry: &CommandPaletteEntry, query: &str) -> bo
     normalized
         .split_whitespace()
         .all(|term| entry.search_text.contains(term))
+}
+
+fn command_palette_visible(state: &State) -> bool {
+    state
+        .borrow()
+        .command_palette_window
+        .as_ref()
+        .map(|window| window.is_visible())
+        .unwrap_or(false)
+}
+
+fn notification_panel_visible(state: &State) -> bool {
+    state
+        .borrow()
+        .notification_panel_window
+        .as_ref()
+        .map(|window| window.is_visible())
+        .unwrap_or(false)
+}
+
+fn close_command_palette(state: &State) -> bool {
+    let window = { state.borrow_mut().command_palette_window.take() };
+    if let Some(window) = window {
+        window.close();
+        true
+    } else {
+        false
+    }
+}
+
+fn close_notification_panel(state: &State) -> bool {
+    let window = { state.borrow_mut().notification_panel_window.take() };
+    if let Some(window) = window {
+        window.close();
+        true
+    } else {
+        false
+    }
+}
+
+fn command_palette_results_payload(state: &State, limit: usize) -> serde_json::Value {
+    let rows = command_palette_entries(state)
+        .into_iter()
+        .take(limit)
+        .enumerate()
+        .map(|(index, entry)| {
+            serde_json::json!({
+                "index": index,
+                "title": entry.title,
+                "detail": entry.detail,
+                "shortcut": entry.hint,
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "visible": command_palette_visible(state),
+        "count": rows.len(),
+        "results": rows,
+    })
+}
+
+fn debug_shortcut_action_key(raw: &str) -> String {
+    raw.chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn debug_shortcut_command_from_action(action: &str) -> Option<ShortcutCommand> {
+    let key = debug_shortcut_action_key(action);
+    shortcut_config::definitions()
+        .iter()
+        .find(|definition| {
+            [
+                definition.config_key,
+                definition.action_name,
+                definition.label,
+            ]
+            .into_iter()
+            .any(|candidate| debug_shortcut_action_key(candidate) == key)
+                || debug_shortcut_action_key(&format!("{:?}", definition.command)) == key
+        })
+        .map(|definition| definition.command)
+}
+
+fn debug_runtime_key(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "," => "comma".to_string(),
+        " " | "spacebar" => "space".to_string(),
+        other => other.replace(['-', ' '], "_"),
+    }
+}
+
+fn debug_runtime_combo(raw: &str) -> Result<String, String> {
+    if !raw.contains('+') {
+        return shortcut_config::NormalizedShortcut::parse(raw)
+            .map(|shortcut| shortcut.to_runtime_combo())
+            .map_err(|err| err.to_string());
+    }
+
+    let mut ctrl = false;
+    let mut alt = false;
+    let mut shift = false;
+    let mut cmd = false;
+    let mut key: Option<String> = None;
+    for part in raw
+        .split('+')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+    {
+        match part.to_ascii_lowercase().as_str() {
+            "ctrl" | "control" => ctrl = true,
+            "alt" | "option" => alt = true,
+            "shift" => shift = true,
+            "cmd" | "command" | "meta" | "super" => cmd = true,
+            other => {
+                if key.is_some() {
+                    return Err(format!("shortcut combo has more than one key: {raw}"));
+                }
+                key = Some(debug_runtime_key(other));
+            }
+        }
+    }
+    let Some(key) = key else {
+        return Err(format!("shortcut combo is missing a key: {raw}"));
+    };
+
+    let mut parts = Vec::new();
+    if ctrl {
+        parts.push("ctrl");
+    }
+    if alt {
+        parts.push("alt");
+    }
+    if shift {
+        parts.push("shift");
+    }
+    if cmd {
+        parts.push("cmd");
+    }
+    parts.push(key.as_str());
+    Ok(parts.join("+"))
+}
+
+fn debug_shortcut_command_from_combo(
+    state: &State,
+    combo: &str,
+) -> Result<ShortcutCommand, String> {
+    let runtime_combo = debug_runtime_combo(combo)?;
+    let shortcuts = { state.borrow().shortcuts.clone() };
+    shortcuts
+        .command_for_runtime_combo(&runtime_combo)
+        .ok_or_else(|| format!("no configured shortcut for {runtime_combo}"))
+}
+
+fn debug_shortcut_simulate(
+    state: &State,
+    action: Option<String>,
+    combo: Option<String>,
+) -> Result<serde_json::Value, crate::control_bridge::BridgeError> {
+    let (command, source) = if let Some(action) = action.as_deref() {
+        let command = debug_shortcut_command_from_action(action).ok_or_else(|| {
+            crate::control_bridge::BridgeError::invalid_params(format!(
+                "unknown shortcut action: {action}"
+            ))
+        })?;
+        (command, action.to_string())
+    } else if let Some(combo) = combo.as_deref() {
+        let command = debug_shortcut_command_from_combo(state, combo).map_err(|err| {
+            crate::control_bridge::BridgeError::invalid_params(format!(
+                "invalid shortcut combo: {err}"
+            ))
+        })?;
+        (command, combo.to_string())
+    } else {
+        return Err(crate::control_bridge::BridgeError::invalid_params(
+            "debug.shortcut.simulate requires action/command/name or combo",
+        ));
+    };
+
+    let handled = dispatch_shortcut_command(state, command);
+    Ok(serde_json::json!({
+        "ok": true,
+        "handled": handled,
+        "source": source,
+        "command": format!("{:?}", command),
+        "command_palette_visible": command_palette_visible(state),
+        "notification_panel_visible": notification_panel_visible(state),
+    }))
+}
+
+fn notification_panel_state_payload(state: &State) -> serde_json::Value {
+    let (notification_count, unread_count) = {
+        let app_state = state.borrow();
+        (
+            app_state.notifications.len(),
+            app_state
+                .notifications
+                .iter()
+                .filter(|notification| notification.unread)
+                .count(),
+        )
+    };
+    serde_json::json!({
+        "visible": notification_panel_visible(state),
+        "notification_count": notification_count,
+        "unread_count": unread_count,
+    })
 }
 
 fn run_command_palette_action(state: &State, action: CommandPaletteAction) -> bool {
@@ -6951,6 +7201,41 @@ fn handle_control_command(state: &State, command: ControlCommand) {
                     let _ = reply.send(Err(error));
                 }
             }
+        }
+        ControlCommand::DebugShortcutSimulate {
+            action,
+            combo,
+            reply,
+        } => {
+            let _ = reply.send(debug_shortcut_simulate(state, action, combo));
+        }
+        ControlCommand::DebugCommandPaletteToggle { reply } => {
+            let visible = if command_palette_visible(state) {
+                close_command_palette(state);
+                false
+            } else {
+                open_command_palette(state)
+            };
+            let _ = reply.send(Ok(serde_json::json!({ "visible": visible })));
+        }
+        ControlCommand::DebugCommandPaletteVisible { reply } => {
+            let _ = reply.send(Ok(serde_json::json!({
+                "visible": command_palette_visible(state),
+            })));
+        }
+        ControlCommand::DebugCommandPaletteResults { limit, reply } => {
+            let _ = reply.send(Ok(command_palette_results_payload(state, limit)));
+        }
+        ControlCommand::DebugNotificationPanelVisible { reply } => {
+            let _ = reply.send(Ok(notification_panel_state_payload(state)));
+        }
+        ControlCommand::DebugNotificationPanelClose { reply } => {
+            let closed = close_notification_panel(state);
+            let mut payload = notification_panel_state_payload(state);
+            if let Some(map) = payload.as_object_mut() {
+                map.insert("closed".to_string(), serde_json::Value::Bool(closed));
+            }
+            let _ = reply.send(Ok(payload));
         }
     }
 }

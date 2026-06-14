@@ -270,6 +270,30 @@ done
 [ -f "$PROJECT_COMMAND_PROOF" ] || { echo "FAIL: project command proof file missing"; exit 1; }
 [ "$(cat "$PROJECT_COMMAND_PROOF")" = "project-ok" ] || { echo "FAIL: project command proof file has unexpected content"; exit 1; }
 
+"$LIMUX_CLI" --json --request '{"id":"smoke-palette-open","method":"debug.shortcut.simulate","params":{"action":"open_command_palette"}}' \
+  2>&1 | tee "$LOG_DIR/stage6-command-palette-open.json"
+grep -q '"command"[[:space:]]*:[[:space:]]*"OpenCommandPalette"' "$LOG_DIR/stage6-command-palette-open.json" \
+  || { echo "FAIL: debug shortcut did not resolve open_command_palette"; exit 1; }
+grep -q '"command_palette_visible"[[:space:]]*:[[:space:]]*true' "$LOG_DIR/stage6-command-palette-open.json" \
+  || { echo "FAIL: command palette did not become visible from shortcut simulation"; exit 1; }
+
+"$LIMUX_CLI" --json --request '{"id":"smoke-palette-visible","method":"debug.command_palette.visible","params":{}}' \
+  2>&1 | tee "$LOG_DIR/stage6-command-palette-visible.json"
+grep -q '"visible"[[:space:]]*:[[:space:]]*true' "$LOG_DIR/stage6-command-palette-visible.json" \
+  || { echo "FAIL: debug.command_palette.visible did not report visible=true"; exit 1; }
+
+"$LIMUX_CLI" --json --request '{"id":"smoke-palette-results","method":"debug.command_palette.results","params":{"limit":80}}' \
+  2>&1 | tee "$LOG_DIR/stage6-command-palette-results.json"
+grep -q 'Smoke Project Command' "$LOG_DIR/stage6-command-palette-results.json" \
+  || { echo "FAIL: command palette results missing project command"; exit 1; }
+grep -q 'Open Settings' "$LOG_DIR/stage6-command-palette-results.json" \
+  || { echo "FAIL: command palette results missing built-in settings command"; exit 1; }
+
+"$LIMUX_CLI" --json --request '{"id":"smoke-palette-close","method":"debug.command_palette.toggle","params":{}}' \
+  2>&1 | tee "$LOG_DIR/stage6-command-palette-close.json"
+grep -q '"visible"[[:space:]]*:[[:space:]]*false' "$LOG_DIR/stage6-command-palette-close.json" \
+  || { echo "FAIL: command palette debug toggle did not close the palette"; exit 1; }
+
 "$LIMUX_CLI" --json sidebar-state --workspace claude \
   2>&1 | tee "$LOG_DIR/stage6-sidebar.json"
 grep -Fq "\"cwd\":\"$DEMO_DIR\"" "$LOG_DIR/stage6-sidebar.json" \
@@ -287,6 +311,27 @@ grep -q '"unread"[[:space:]]*:[[:space:]]*true' "$LOG_DIR/stage6-notifications-u
   || { echo "FAIL: unread notification list did not report unread=true"; exit 1; }
 NOTIFICATION_ID="$(sed -n 's/.*"notification_id"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$LOG_DIR/stage6-notifications-unread.json" | head -1)"
 [ -n "$NOTIFICATION_ID" ] || { echo "FAIL: unread notification list missing notification_id"; exit 1; }
+
+"$LIMUX_CLI" --json --request '{"id":"smoke-notification-panel-open","method":"debug.shortcut.simulate","params":{"action":"open_notification_panel"}}' \
+  2>&1 | tee "$LOG_DIR/stage6-notification-panel-open.json"
+grep -q '"command"[[:space:]]*:[[:space:]]*"OpenNotificationPanel"' "$LOG_DIR/stage6-notification-panel-open.json" \
+  || { echo "FAIL: debug shortcut did not resolve open_notification_panel"; exit 1; }
+grep -q '"notification_panel_visible"[[:space:]]*:[[:space:]]*true' "$LOG_DIR/stage6-notification-panel-open.json" \
+  || { echo "FAIL: notification panel did not become visible from shortcut simulation"; exit 1; }
+
+"$LIMUX_CLI" --json --request '{"id":"smoke-notification-panel-visible","method":"debug.notification_panel.visible","params":{}}' \
+  2>&1 | tee "$LOG_DIR/stage6-notification-panel-visible.json"
+grep -q '"visible"[[:space:]]*:[[:space:]]*true' "$LOG_DIR/stage6-notification-panel-visible.json" \
+  || { echo "FAIL: debug.notification_panel.visible did not report visible=true"; exit 1; }
+grep -q '"notification_count"[[:space:]]*:[[:space:]]*[1-9]' "$LOG_DIR/stage6-notification-panel-visible.json" \
+  || { echo "FAIL: notification panel state did not report notifications"; exit 1; }
+grep -q '"unread_count"[[:space:]]*:[[:space:]]*[1-9]' "$LOG_DIR/stage6-notification-panel-visible.json" \
+  || { echo "FAIL: notification panel state did not report unread notifications"; exit 1; }
+
+"$LIMUX_CLI" --json --request '{"id":"smoke-notification-panel-close","method":"debug.notification_panel.close","params":{}}' \
+  2>&1 | tee "$LOG_DIR/stage6-notification-panel-close.json"
+grep -q '"visible"[[:space:]]*:[[:space:]]*false' "$LOG_DIR/stage6-notification-panel-close.json" \
+  || { echo "FAIL: debug.notification_panel.close did not hide the notification panel"; exit 1; }
 
 "$LIMUX_CLI" --json jump-notification --id "$NOTIFICATION_ID" \
   2>&1 | tee "$LOG_DIR/stage6-notification-jump.json"
@@ -308,7 +353,7 @@ if grep -q 'Smoke test' "$LOG_DIR/stage6-notifications-clear.json"; then
   echo "FAIL: clear-notifications did not remove Smoke test notification"
   exit 1
 fi
-echo "stage 6: OK (project commands + notification list/jump/clear + sidebar-state)"
+echo "stage 6: OK (project commands + native palette/panel shortcuts + notification list/jump/clear + sidebar-state)"
 
 # --- 10. Stage 7: self-split pane.create + command injection ---------------
 echo
