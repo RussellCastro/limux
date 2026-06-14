@@ -59,8 +59,9 @@ struct Workspace {
     /// The folder path this workspace was opened with.
     folder_path: Option<String>,
     /// Path label shown below workspace name in sidebar.
-    #[allow(dead_code)]
     path_label: gtk::Label,
+    /// Compact cmux-style metadata line shown below the path.
+    metadata_label: gtk::Label,
 }
 
 pub(crate) struct AppState {
@@ -420,6 +421,88 @@ fn listening_ports_for_cwd(cwd: &str) -> Vec<serde_json::Value> {
         }
     }
     rows
+}
+
+fn sidebar_metadata_text(
+    git_branch: Option<&str>,
+    pr_number: Option<u64>,
+    pr_status: Option<&str>,
+    ports: &[serde_json::Value],
+) -> Option<String> {
+    let mut parts = Vec::new();
+
+    if let Some(branch) = git_branch
+        .map(str::trim)
+        .filter(|branch| !branch.is_empty() && *branch != "none")
+    {
+        parts.push(format!("git {branch}"));
+    }
+
+    if let Some(pr_number) = pr_number {
+        let status = pr_status
+            .map(str::trim)
+            .filter(|status| !status.is_empty() && *status != "none")
+            .unwrap_or("linked");
+        parts.push(format!("PR #{pr_number} {status}"));
+    }
+
+    let port_numbers = ports
+        .iter()
+        .filter_map(|port| port.get("port").and_then(serde_json::Value::as_u64))
+        .collect::<Vec<_>>();
+    if !port_numbers.is_empty() {
+        let shown = port_numbers
+            .iter()
+            .take(3)
+            .map(|port| port.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let extra = port_numbers.len().saturating_sub(3);
+        if extra == 0 {
+            parts.push(format!("ports {shown}"));
+        } else {
+            parts.push(format!("ports {shown}+{extra}"));
+        }
+    }
+
+    (!parts.is_empty()).then(|| parts.join(" | "))
+}
+
+fn set_workspace_path_label(workspace: &Workspace, path: Option<&str>) {
+    if let Some(path) = path.map(str::trim).filter(|path| !path.is_empty()) {
+        workspace.path_label.set_label(&abbreviate_path(path));
+        workspace.path_label.set_tooltip_text(Some(path));
+        workspace.path_label.set_visible(true);
+    }
+}
+
+fn set_workspace_metadata_label(
+    workspace: &Workspace,
+    git_branch: Option<&str>,
+    linked_pr: Option<&serde_json::Value>,
+    ports: &[serde_json::Value],
+) {
+    let pr_number = linked_pr
+        .and_then(|pr| pr.get("number"))
+        .and_then(serde_json::Value::as_u64);
+    let pr_status = linked_pr
+        .map(pr_status_for_linked_pr)
+        .filter(|status| status != "none");
+
+    if let Some(text) = sidebar_metadata_text(git_branch, pr_number, pr_status.as_deref(), ports) {
+        workspace.metadata_label.set_label(&text);
+        workspace.metadata_label.set_tooltip_text(Some(&text));
+        workspace.metadata_label.set_visible(true);
+    } else {
+        workspace.metadata_label.set_label("");
+        workspace.metadata_label.set_tooltip_text(None::<&str>);
+        workspace.metadata_label.set_visible(false);
+    }
+}
+
+fn refresh_workspace_git_metadata(workspace: &Workspace, cwd: Option<&str>) {
+    let git_branch = cwd.and_then(git_branch_for_cwd);
+    set_workspace_metadata_label(workspace, git_branch.as_deref(), None, &[]);
 }
 
 fn sidebar_state_payload(
@@ -1668,6 +1751,13 @@ row:selected .limux-ws-star-btn {
 }
 row:selected .limux-ws-path {
     color: alpha(@window_fg_color, 0.5);
+}
+.limux-ws-meta {
+    color: alpha(@window_fg_color, 0.42);
+    font-size: 11px;
+}
+row:selected .limux-ws-meta {
+    color: alpha(@window_fg_color, 0.62);
 }
 .limux-content {
     background-color: @window_bg_color;
@@ -3188,6 +3278,7 @@ fn build_sidebar_row(
     gtk::Label,
     gtk::Label,
     gtk::Label,
+    gtk::Label,
 ) {
     let notify_dot = gtk::Label::builder().label("\u{25CF}").build();
     notify_dot.add_css_class("limux-notify-dot-hidden");
@@ -3227,6 +3318,14 @@ fn build_sidebar_row(
         path_label.set_visible(false);
     }
 
+    let metadata_label = gtk::Label::builder()
+        .xalign(0.0)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .visible(false)
+        .margin_start(8)
+        .build();
+    metadata_label.add_css_class("limux-ws-meta");
+
     let notify_label = gtk::Label::builder()
         .xalign(0.0)
         .ellipsize(gtk::pango::EllipsizeMode::End)
@@ -3242,6 +3341,7 @@ fn build_sidebar_row(
     vbox.add_css_class("limux-sidebar-row-box");
     vbox.append(&top_row);
     vbox.append(&path_label);
+    vbox.append(&metadata_label);
     vbox.append(&notify_label);
 
     let row = gtk::ListBoxRow::new();
@@ -3254,6 +3354,7 @@ fn build_sidebar_row(
         notify_dot,
         notify_label,
         path_label,
+        metadata_label,
     )
 }
 
@@ -3777,7 +3878,7 @@ fn create_workspace_for_tab(state: &State, payload: &str) -> bool {
     let split_container = SplitTreeContainer::new(state, pane.clone().upcast());
     let root = split_container.widget().clone();
 
-    let (row, name_label, favorite_button, notify_dot, notify_label, path_label) =
+    let (row, name_label, favorite_button, notify_dot, notify_label, path_label, metadata_label) =
         build_sidebar_row(&seed.name, seed.folder_path.as_deref());
     let row_clone = row.clone();
     {
@@ -3801,9 +3902,21 @@ fn create_workspace_for_tab(state: &State, payload: &str) -> bool {
             cwd: Rc::new(RefCell::new(seed.cwd.clone())),
             folder_path: seed.folder_path.clone(),
             path_label,
+            metadata_label,
         });
         app_state.active_idx = app_state.workspaces.len() - 1;
         app_state.stack.set_visible_child_name(&stack_name);
+    }
+
+    {
+        let app_state = state.borrow();
+        if let Some(workspace) = app_state
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == new_workspace_id)
+        {
+            refresh_workspace_git_metadata(workspace, seed.cwd.as_deref());
+        }
     }
 
     {
@@ -4317,6 +4430,14 @@ fn handle_control_command(state: &State, command: ControlCommand) {
                 .unwrap_or_default();
             let result = {
                 let app_state = state.borrow();
+                let workspace = &app_state.workspaces[index];
+                set_workspace_path_label(workspace, cwd.as_deref());
+                set_workspace_metadata_label(
+                    workspace,
+                    git_branch.as_deref(),
+                    linked_pr.as_ref(),
+                    &ports,
+                );
                 sidebar_state_payload(&app_state, index, git_branch, linked_pr, ports)
             };
             let _ = reply.send(result.ok_or_else(|| {
@@ -5899,7 +6020,7 @@ fn add_workspace_from_state(state: &State, workspace: &WorkspaceState) {
         build_workspace_root(state, &shortcuts, &id, working_dir, &workspace.layout);
     stack.add_named(&root, Some(&stack_name));
 
-    let (row, name_label, favorite_button, notify_dot, notify_label, path_label) =
+    let (row, name_label, favorite_button, notify_dot, notify_label, path_label, metadata_label) =
         build_sidebar_row(&workspace.name, workspace.folder_path.as_deref());
     sidebar_list.append(&row);
     install_workspace_row_interactions(state, &id, &row, &favorite_button);
@@ -5920,7 +6041,10 @@ fn add_workspace_from_state(state: &State, workspace: &WorkspaceState) {
         cwd,
         folder_path: workspace.folder_path.clone(),
         path_label,
+        metadata_label,
     };
+
+    refresh_workspace_git_metadata(&ws, workspace.cwd.as_deref());
 
     if workspace.favorite {
         set_workspace_favorite_visual(&ws);
@@ -6047,7 +6171,9 @@ pub(crate) fn create_pane_for_workspace(
             glib::idle_add_local_once(move || {
                 let s = state.borrow();
                 if let Some(ws) = s.workspaces.iter().find(|w| w.id == ws_id) {
-                    *ws.cwd.borrow_mut() = Some(pwd);
+                    *ws.cwd.borrow_mut() = Some(pwd.clone());
+                    set_workspace_path_label(ws, Some(&pwd));
+                    refresh_workspace_git_metadata(ws, Some(&pwd));
                 }
             });
         }),
@@ -7264,8 +7390,9 @@ mod tests {
         resolved_system_prefers_dark, sanitize_background_opacity,
         shortcut_allowed_while_browser_find_active, shortcut_blocked_by_editable,
         pr_status_for_linked_pr, shortcut_command_from_key_event, shortcut_dispatch_propagation,
-        should_emit_desktop_notification, socket_address_port, ss_line_listening_port,
-        ss_line_pids, ss_line_process_name, tab_drag_workspace_seed, use_opaque_window_background,
+        should_emit_desktop_notification, sidebar_metadata_text, socket_address_port,
+        ss_line_listening_port, ss_line_pids, ss_line_process_name, tab_drag_workspace_seed,
+        use_opaque_window_background,
         validate_workspace_folder_input_with_dirs, workspace_drop_layout_path,
         workspace_folder_path_from_input, workspace_notification_message, Direction,
         EditableCaptureContext, NeighborScore, PaneBounds, PaneCreateDirection,
@@ -7524,6 +7651,23 @@ mod tests {
             [HOST_ENTRY_CSS_CLASS, WORKSPACE_RENAME_ENTRY_CSS_CLASS]
         );
         assert!(BASE_CSS.contains(".limux-ws-rename-entry"));
+        assert!(BASE_CSS.contains(".limux-ws-meta"));
+    }
+
+    #[test]
+    fn sidebar_metadata_text_compacts_git_pr_and_ports() {
+        let ports = vec![
+            serde_json::json!({ "port": 3000 }),
+            serde_json::json!({ "port": 5173 }),
+            serde_json::json!({ "port": 8000 }),
+            serde_json::json!({ "port": 9000 }),
+        ];
+
+        assert_eq!(
+            sidebar_metadata_text(Some("main"), Some(42), Some("open"), &ports).as_deref(),
+            Some("git main | PR #42 open | ports 3000,5173,8000+1")
+        );
+        assert_eq!(sidebar_metadata_text(Some("none"), None, None, &[]), None);
     }
 
     #[test]
