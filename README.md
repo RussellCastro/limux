@@ -144,6 +144,17 @@ limux commands run test --project "$PWD"
 See [`docs/custom-commands.md`](docs/custom-commands.md) for the accepted
 schema and palette behavior.
 
+## Browser import
+
+Limux can import JSON cookie exports or Netscape `cookies.txt` files into the
+active WebKit browser page via `limux browser import-cookies --file <path>`.
+This is a first cookie-file import slice; native Chrome, Firefox, and Arc
+profile import plus history/session import remain tracked in the cmux parity
+contract.
+
+See [`docs/browser-import.md`](docs/browser-import.md) for supported formats and
+current limitations.
+
 ## Agent integrations
 
 Limux ships first-class hooks for coding agents (Codex, Claude Code, and

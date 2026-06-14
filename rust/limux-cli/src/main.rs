@@ -199,7 +199,50 @@ fn parse_global_args() -> Result<GlobalOptions> {
 
 fn print_help() {
     println!(
-        "limux CLI\n\nUsage: limux [--socket <path>] [--json] [--id-format refs|both|uuids] <command> [args...]\n       limux\n\nRunning `limux` with no arguments launches the GTK app.\n\nCommon commands:\n  identify [--workspace <id|ref>] [--surface <id|ref>]\n  list-panels [--workspace <id|ref>]\n  list-panes [--workspace <id|ref>]\n  list-workspaces\n  surface-health [--workspace <id|ref>]\n  send [--workspace <id|ref>] [--surface <id|ref>] <text>\n  send-key [--workspace <id|ref>] [--surface <id|ref>] <key>\n  new-workspace [--cwd <path>] [--command <text>]\n  commands [list|run <name>] [--project <path>] [--config <path>]\n  run-command [--project <path>] [--config <path>] [--cwd <path>] [--name <workspace>] <name>\n  ssh [--cwd <path>] [--name <workspace-name>] [--] <ssh-args...>\n  close-workspace --workspace <id|ref>\n  sidebar-state --workspace <id|ref>\n  new-surface [--workspace <id|ref>]\n  new-pane [--workspace <id|ref>] [--pane <id|ref>] [--surface <id|ref>] [--direction <left|right|up|down>] [--type <terminal|browser>] [--command <text>] [--url <url>]\n      Live GTK self-spawn currently supports terminal panes only; browser panes remain deferred.\n  rename-workspace [--workspace <id|ref>] <title>\n  rename-window [--workspace <id|ref>] <title>\n  rename-tab [--workspace <id|ref>] [--tab <id|ref>] <title>\n  read-screen [--workspace <id|ref>] [--surface <id|ref>] [--scrollback] [--lines <n>]\n  capture-pane (alias of read-screen)\n  tab-action --action <name> [--workspace <id|ref>] [--tab <id|ref>] [--title <text>] [--url <url>]\n  browser [--surface <id|ref>|<surface>] <subcommand> ...\n  list-notifications [--unread]\n  clear-notifications [--id <notification-id>]\n  jump-notification [--id <notification-id>]\n\nAgent integrations:\n  notify [--workspace <id|ref>] [--subtitle <text>] [--body <text>] <title>\n  hooks setup [agent] | hooks uninstall [agent] | hooks <agent> <event>\n  claude-hook | opencode-hook | gemini-hook --event <name> [--subtitle <text>] [--body <text>] [--title <text>]\n  agent-team [--agents codex,claude[,opencode,gemini]] [--cwd <path>] [--no-launch] [--dry-run]\n      Splits the active workspace into one pane per agent (caller's pane stays\n      as the orchestrator on the left, peers stack down the right), launches\n      each CLI in its pane, and writes AGENTS.md describing the <agent-msg>\n      XML protocol so peers can talk via\n      `limux send --surface <peer-surface-id> <envelope>`.\n"
+        concat!(
+            "limux CLI\n\n",
+            "Usage: limux [--socket <path>] [--json] [--id-format refs|both|uuids] <command> [args...]\n",
+            "       limux\n\n",
+            "Running `limux` with no arguments launches the GTK app.\n\n",
+            "Common commands:\n",
+            "  identify [--workspace <id|ref>] [--surface <id|ref>]\n",
+            "  list-panels [--workspace <id|ref>]\n",
+            "  list-panes [--workspace <id|ref>]\n",
+            "  list-workspaces\n",
+            "  surface-health [--workspace <id|ref>]\n",
+            "  send [--workspace <id|ref>] [--surface <id|ref>] <text>\n",
+            "  send-key [--workspace <id|ref>] [--surface <id|ref>] <key>\n",
+            "  new-workspace [--cwd <path>] [--command <text>]\n",
+            "  commands [list|run <name>] [--project <path>] [--config <path>]\n",
+            "  run-command [--project <path>] [--config <path>] [--cwd <path>] [--name <workspace>] <name>\n",
+            "  ssh [--cwd <path>] [--name <workspace-name>] [--] <ssh-args...>\n",
+            "  close-workspace --workspace <id|ref>\n",
+            "  sidebar-state --workspace <id|ref>\n",
+            "  new-surface [--workspace <id|ref>]\n",
+            "  new-pane [--workspace <id|ref>] [--pane <id|ref>] [--surface <id|ref>] [--direction <left|right|up|down>] [--type <terminal|browser>] [--command <text>] [--url <url>]\n",
+            "      Live GTK self-spawn currently supports terminal panes only; browser panes remain deferred.\n",
+            "  rename-workspace [--workspace <id|ref>] <title>\n",
+            "  rename-window [--workspace <id|ref>] <title>\n",
+            "  rename-tab [--workspace <id|ref>] [--tab <id|ref>] <title>\n",
+            "  read-screen [--workspace <id|ref>] [--surface <id|ref>] [--scrollback] [--lines <n>]\n",
+            "  capture-pane (alias of read-screen)\n",
+            "  tab-action --action <name> [--workspace <id|ref>] [--tab <id|ref>] [--title <text>] [--url <url>]\n",
+            "  browser [--surface <id|ref>|<surface>] <subcommand> ...\n",
+            "      browser import-cookies --file <path> [--format auto|json|netscape]\n",
+            "  list-notifications [--unread]\n",
+            "  clear-notifications [--id <notification-id>]\n",
+            "  jump-notification [--id <notification-id>]\n\n",
+            "Agent integrations:\n",
+            "  notify [--workspace <id|ref>] [--subtitle <text>] [--body <text>] <title>\n",
+            "  hooks setup [agent] | hooks uninstall [agent] | hooks <agent> <event>\n",
+            "  claude-hook | opencode-hook | gemini-hook --event <name> [--subtitle <text>] [--body <text>] [--title <text>]\n",
+            "  agent-team [--agents codex,claude[,opencode,gemini]] [--cwd <path>] [--no-launch] [--dry-run]\n",
+            "      Splits the active workspace into one pane per agent (caller's pane stays\n",
+            "      as the orchestrator on the left, peers stack down the right), launches\n",
+            "      each CLI in its pane, and writes AGENTS.md describing the <agent-msg>\n",
+            "      XML protocol so peers can talk via\n",
+            "      `limux send --surface <peer-surface-id> <envelope>`.\n"
+        )
     );
 }
 
@@ -353,6 +396,149 @@ fn parse_opt(args: &[String], name: &str) -> Option<String> {
 
 fn parse_flag(args: &[String], name: &str) -> bool {
     args.iter().any(|a| a == name)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BrowserCookieImportFormat {
+    Auto,
+    Json,
+    Netscape,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BrowserCookieImportRow {
+    name: String,
+    value: String,
+    domain: Option<String>,
+    path: Option<String>,
+    http_only: bool,
+    secure: bool,
+}
+
+impl BrowserCookieImportFormat {
+    fn parse(raw: Option<&str>) -> Result<Self> {
+        match raw.unwrap_or("auto") {
+            "auto" => Ok(Self::Auto),
+            "json" => Ok(Self::Json),
+            "netscape" | "cookies.txt" | "txt" => Ok(Self::Netscape),
+            other => bail!("browser import-cookies --format must be auto|json|netscape, got {other}"),
+        }
+    }
+
+    fn resolve_for_path(self, path: &Path) -> Self {
+        match self {
+            Self::Auto => match path.extension().and_then(|ext| ext.to_str()) {
+                Some(ext) if ext.eq_ignore_ascii_case("json") => Self::Json,
+                _ => Self::Netscape,
+            },
+            other => other,
+        }
+    }
+}
+
+fn load_browser_cookie_import_file(
+    path: &Path,
+    format: BrowserCookieImportFormat,
+) -> Result<Vec<BrowserCookieImportRow>> {
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("failed to read browser cookie file {}", path.display()))?;
+    match format.resolve_for_path(path) {
+        BrowserCookieImportFormat::Json => parse_browser_cookie_import_json(&raw, path),
+        BrowserCookieImportFormat::Netscape => parse_browser_cookie_import_netscape(&raw, path),
+        BrowserCookieImportFormat::Auto => unreachable!("auto format should resolve"),
+    }
+}
+
+fn parse_browser_cookie_import_json(
+    raw: &str,
+    path: &Path,
+) -> Result<Vec<BrowserCookieImportRow>> {
+    let value: Value = serde_json::from_str(raw)
+        .with_context(|| format!("browser cookie file {} is not valid JSON", path.display()))?;
+    let rows = match &value {
+        Value::Array(rows) => rows,
+        Value::Object(map) => map
+            .get("cookies")
+            .and_then(Value::as_array)
+            .ok_or_else(|| anyhow!("JSON cookie import expects an array or object with cookies[]"))?,
+        _ => bail!("JSON cookie import expects an array or object with cookies[]"),
+    };
+
+    rows.iter()
+        .enumerate()
+        .map(|(index, row)| json_cookie_import_row(row).with_context(|| format!("cookies[{index}]")))
+        .collect()
+}
+
+fn json_cookie_import_row(value: &Value) -> Result<BrowserCookieImportRow> {
+    let map = value
+        .as_object()
+        .ok_or_else(|| anyhow!("cookie row must be an object"))?;
+    let name = get_string(value, &["name", "key"])
+        .ok_or_else(|| anyhow!("cookie row is missing name"))?;
+    let cookie_value = get_string(value, &["value"])
+        .ok_or_else(|| anyhow!("cookie row is missing value"))?;
+    let domain = get_string(value, &["domain", "host"]);
+    let path = get_string(value, &["path"]);
+    let http_only = map
+        .get("httpOnly")
+        .or_else(|| map.get("http_only"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let secure = map.get("secure").and_then(Value::as_bool).unwrap_or(false);
+
+    Ok(BrowserCookieImportRow {
+        name,
+        value: cookie_value,
+        domain,
+        path,
+        http_only,
+        secure,
+    })
+}
+
+fn parse_browser_cookie_import_netscape(
+    raw: &str,
+    path: &Path,
+) -> Result<Vec<BrowserCookieImportRow>> {
+    let mut rows = Vec::new();
+    for (index, line) in raw.lines().enumerate() {
+        let line_number = index + 1;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let (http_only, body) = if let Some(rest) = trimmed.strip_prefix("#HttpOnly_") {
+            (true, rest)
+        } else if trimmed.starts_with('#') {
+            continue;
+        } else {
+            (false, trimmed)
+        };
+
+        let parts = body.split('\t').collect::<Vec<_>>();
+        if parts.len() < 7 {
+            bail!(
+                "{}:{} is not a valid Netscape cookie row",
+                path.display(),
+                line_number
+            );
+        }
+        let name = parts[5].trim();
+        let value = parts[6].trim();
+        if name.is_empty() {
+            bail!("{}:{} has an empty cookie name", path.display(), line_number);
+        }
+        rows.push(BrowserCookieImportRow {
+            name: name.to_string(),
+            value: value.to_string(),
+            domain: Some(parts[0].trim().to_string()).filter(|value| !value.is_empty()),
+            path: Some(parts[2].trim().to_string()).filter(|value| !value.is_empty()),
+            http_only,
+            secure: parts[3].eq_ignore_ascii_case("TRUE"),
+        });
+    }
+    Ok(rows)
 }
 
 fn positional_arg(args: &[String], index: usize) -> Option<String> {
@@ -3182,7 +3368,7 @@ async fn run_browser(
         }
         match arg.as_str() {
             "--workspace" | "--surface" | "--id-format" | "--timeout-ms" | "--load-state"
-            | "--out" => {
+            | "--out" | "--file" | "--format" => {
                 if idx + 1 < browser_args.len() {
                     skip = true;
                 }
@@ -3567,6 +3753,53 @@ async fn run_browser(
             }
             let payload = browser_call(client, Some(sid), method, p).await?;
             CommandOutput::Json(payload)
+        }
+        "import-cookies" => {
+            let sid = surface
+                .clone()
+                .ok_or_else(|| anyhow!("browser import-cookies requires a surface"))?;
+            let file = parse_opt(&browser_args, "--file")
+                .or_else(|| rest.first().cloned())
+                .ok_or_else(|| anyhow!("browser import-cookies requires --file <path>"))?;
+            let format = BrowserCookieImportFormat::parse(
+                parse_opt(&browser_args, "--format").as_deref(),
+            )?;
+            let cookies = load_browser_cookie_import_file(Path::new(&file), format)?;
+            let mut imported = Vec::new();
+            let mut skipped = Vec::new();
+
+            for cookie in cookies {
+                if cookie.http_only {
+                    skipped.push(json!({
+                        "name": cookie.name,
+                        "domain": cookie.domain,
+                        "path": cookie.path,
+                        "reason": "http_only cookies cannot be set through the current page bridge",
+                    }));
+                    continue;
+                }
+
+                let mut p = Map::new();
+                p.insert("name".to_string(), Value::String(cookie.name.clone()));
+                p.insert("value".to_string(), Value::String(cookie.value.clone()));
+                browser_call(client, Some(sid.clone()), "browser.cookies.set", p).await?;
+                imported.push(json!({
+                    "name": cookie.name,
+                    "domain": cookie.domain,
+                    "path": cookie.path,
+                    "secure": cookie.secure,
+                }));
+            }
+
+            CommandOutput::Json(json!({
+                "ok": true,
+                "file": file,
+                "imported_count": imported.len(),
+                "skipped_count": skipped.len(),
+                "imported": imported,
+                "skipped": skipped,
+                "note": "Imported cookies are set through the active WebKit page with document.cookie; native browser profile import remains tracked separately.",
+            }))
         }
         "tab" => {
             let sid = surface
@@ -4521,6 +4754,50 @@ mod cli_arg_tests {
         .expect("array commands");
         assert_eq!(array[0].name, "lint");
         assert_eq!(array[0].command, "cargo clippy");
+    }
+
+    #[test]
+    fn browser_cookie_import_parses_json_and_netscape_files() {
+        let json_rows = parse_browser_cookie_import_json(
+            r#"{
+                "cookies": [
+                    {
+                        "name": "sid",
+                        "value": "123",
+                        "domain": ".example.com",
+                        "path": "/",
+                        "secure": true
+                    },
+                    {
+                        "key": "prefs",
+                        "value": "dark",
+                        "httpOnly": true
+                    }
+                ]
+            }"#,
+            Path::new("cookies.json"),
+        )
+        .expect("json cookies");
+
+        assert_eq!(json_rows.len(), 2);
+        assert_eq!(json_rows[0].name, "sid");
+        assert_eq!(json_rows[0].domain.as_deref(), Some(".example.com"));
+        assert!(json_rows[0].secure);
+        assert!(json_rows[1].http_only);
+
+        let netscape_rows = parse_browser_cookie_import_netscape(
+            "# Netscape HTTP Cookie File\n#HttpOnly_.example.com\tTRUE\t/\tFALSE\t0\tsession\tabc\n.example.com\tTRUE\t/\tTRUE\t0\ttheme\tdark\n",
+            Path::new("cookies.txt"),
+        )
+        .expect("netscape cookies");
+
+        assert_eq!(netscape_rows.len(), 2);
+        assert_eq!(netscape_rows[0].name, "session");
+        assert_eq!(netscape_rows[0].domain.as_deref(), Some(".example.com"));
+        assert!(netscape_rows[0].http_only);
+        assert!(!netscape_rows[0].secure);
+        assert_eq!(netscape_rows[1].name, "theme");
+        assert!(netscape_rows[1].secure);
     }
 
     #[test]
