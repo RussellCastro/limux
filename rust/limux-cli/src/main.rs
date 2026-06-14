@@ -199,7 +199,7 @@ fn parse_global_args() -> Result<GlobalOptions> {
 
 fn print_help() {
     println!(
-        "limux CLI\n\nUsage: limux [--socket <path>] [--json] [--id-format refs|both|uuids] <command> [args...]\n       limux\n\nRunning `limux` with no arguments launches the GTK app.\n\nCommon commands:\n  identify [--workspace <id|ref>] [--surface <id|ref>]\n  list-panels [--workspace <id|ref>]\n  list-panes [--workspace <id|ref>]\n  list-workspaces\n  surface-health [--workspace <id|ref>]\n  send [--workspace <id|ref>] [--surface <id|ref>] <text>\n  send-key [--workspace <id|ref>] [--surface <id|ref>] <key>\n  new-workspace [--cwd <path>] [--command <text>]\n  ssh [--cwd <path>] [--name <workspace-name>] [--] <ssh-args...>\n  close-workspace --workspace <id|ref>\n  sidebar-state --workspace <id|ref>\n  new-surface [--workspace <id|ref>]\n  new-pane [--workspace <id|ref>] [--pane <id|ref>] [--surface <id|ref>] [--direction <left|right|up|down>] [--type <terminal|browser>] [--command <text>] [--url <url>]\n      Live GTK self-spawn currently supports terminal panes only; browser panes remain deferred.\n  rename-workspace [--workspace <id|ref>] <title>\n  rename-window [--workspace <id|ref>] <title>\n  rename-tab [--workspace <id|ref>] [--tab <id|ref>] <title>\n  read-screen [--workspace <id|ref>] [--surface <id|ref>] [--scrollback] [--lines <n>]\n  capture-pane (alias of read-screen)\n  tab-action --action <name> [--workspace <id|ref>] [--tab <id|ref>] [--title <text>] [--url <url>]\n  browser [--surface <id|ref>|<surface>] <subcommand> ...\n  list-notifications [--unread]\n  clear-notifications [--id <notification-id>]\n  jump-notification [--id <notification-id>]\n\nAgent integrations:\n  notify [--workspace <id|ref>] [--subtitle <text>] [--body <text>] <title>\n  hooks setup [agent] | hooks uninstall [agent] | hooks <agent> <event>\n  claude-hook | opencode-hook | gemini-hook --event <name> [--subtitle <text>] [--body <text>] [--title <text>]\n  agent-team [--agents codex,claude[,opencode,gemini]] [--cwd <path>] [--no-launch] [--dry-run]\n      Splits the active workspace into one pane per agent (caller's pane stays\n      as the orchestrator on the left, peers stack down the right), launches\n      each CLI in its pane, and writes AGENTS.md describing the <agent-msg>\n      XML protocol so peers can talk via\n      `limux send --surface <peer-surface-id> <envelope>`.\n"
+        "limux CLI\n\nUsage: limux [--socket <path>] [--json] [--id-format refs|both|uuids] <command> [args...]\n       limux\n\nRunning `limux` with no arguments launches the GTK app.\n\nCommon commands:\n  identify [--workspace <id|ref>] [--surface <id|ref>]\n  list-panels [--workspace <id|ref>]\n  list-panes [--workspace <id|ref>]\n  list-workspaces\n  surface-health [--workspace <id|ref>]\n  send [--workspace <id|ref>] [--surface <id|ref>] <text>\n  send-key [--workspace <id|ref>] [--surface <id|ref>] <key>\n  new-workspace [--cwd <path>] [--command <text>]\n  commands [list|run <name>] [--project <path>] [--config <path>]\n  run-command [--project <path>] [--config <path>] [--cwd <path>] [--name <workspace>] <name>\n  ssh [--cwd <path>] [--name <workspace-name>] [--] <ssh-args...>\n  close-workspace --workspace <id|ref>\n  sidebar-state --workspace <id|ref>\n  new-surface [--workspace <id|ref>]\n  new-pane [--workspace <id|ref>] [--pane <id|ref>] [--surface <id|ref>] [--direction <left|right|up|down>] [--type <terminal|browser>] [--command <text>] [--url <url>]\n      Live GTK self-spawn currently supports terminal panes only; browser panes remain deferred.\n  rename-workspace [--workspace <id|ref>] <title>\n  rename-window [--workspace <id|ref>] <title>\n  rename-tab [--workspace <id|ref>] [--tab <id|ref>] <title>\n  read-screen [--workspace <id|ref>] [--surface <id|ref>] [--scrollback] [--lines <n>]\n  capture-pane (alias of read-screen)\n  tab-action --action <name> [--workspace <id|ref>] [--tab <id|ref>] [--title <text>] [--url <url>]\n  browser [--surface <id|ref>|<surface>] <subcommand> ...\n  list-notifications [--unread]\n  clear-notifications [--id <notification-id>]\n  jump-notification [--id <notification-id>]\n\nAgent integrations:\n  notify [--workspace <id|ref>] [--subtitle <text>] [--body <text>] <title>\n  hooks setup [agent] | hooks uninstall [agent] | hooks <agent> <event>\n  claude-hook | opencode-hook | gemini-hook --event <name> [--subtitle <text>] [--body <text>] [--title <text>]\n  agent-team [--agents codex,claude[,opencode,gemini]] [--cwd <path>] [--no-launch] [--dry-run]\n      Splits the active workspace into one pane per agent (caller's pane stays\n      as the orchestrator on the left, peers stack down the right), launches\n      each CLI in its pane, and writes AGENTS.md describing the <agent-msg>\n      XML protocol so peers can talk via\n      `limux send --surface <peer-surface-id> <envelope>`.\n"
     );
 }
 
@@ -415,6 +415,8 @@ fn trailing_title(args: &[String]) -> Option<String> {
             || arg == "--value"
             || arg == "--amount"
             || arg == "--unset"
+            || arg == "--project"
+            || arg == "--config"
         {
             skip = true;
             continue;
@@ -443,6 +445,318 @@ fn wait_signal_path(name: &str) -> PathBuf {
         })
         .collect();
     PathBuf::from(format!("/tmp/limux-wait-for-{}.sig", sanitized))
+}
+
+const PROJECT_COMMAND_CONFIG_FILES: [&str; 2] = ["cmux.json", "limux.json"];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProjectCommandDefinition {
+    name: String,
+    label: String,
+    command: String,
+    cwd: Option<String>,
+    source: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProjectCommandWorkspaceRequest {
+    command_name: String,
+    workspace_name: String,
+    command: String,
+    cwd: String,
+    config: PathBuf,
+}
+
+fn nonempty_trimmed(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn json_string_for_keys(map: &Map<String, Value>, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| match map.get(*key) {
+        Some(Value::String(value)) => nonempty_trimmed(value),
+        Some(Value::Number(value)) => Some(value.to_string()),
+        _ => None,
+    })
+}
+
+fn command_string_from_value(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) => nonempty_trimmed(value),
+        Value::Array(items) => {
+            let mut args = Vec::new();
+            for item in items {
+                let Value::String(value) = item else {
+                    return None;
+                };
+                args.push(shell_single_quote(value));
+            }
+            if args.is_empty() {
+                None
+            } else {
+                Some(args.join(" "))
+            }
+        }
+        Value::Object(map) => ["command", "cmd", "run", "script", "shell"]
+            .iter()
+            .find_map(|key| map.get(*key).and_then(command_string_from_value)),
+        _ => None,
+    }
+}
+
+fn parse_project_command_entry(
+    name_hint: Option<&str>,
+    value: &Value,
+    source: &Path,
+) -> Result<ProjectCommandDefinition> {
+    if let Value::String(command) = value {
+        let name = name_hint
+            .and_then(nonempty_trimmed)
+            .ok_or_else(|| anyhow!("string project commands require a map key name"))?;
+        let command = nonempty_trimmed(command)
+            .ok_or_else(|| anyhow!("project command `{name}` has an empty command"))?;
+        return Ok(ProjectCommandDefinition {
+            label: name.clone(),
+            name,
+            command,
+            cwd: None,
+            source: source.to_path_buf(),
+        });
+    }
+
+    let Value::Object(map) = value else {
+        bail!("project command entries must be strings or objects");
+    };
+
+    let command = command_string_from_value(value).ok_or_else(|| {
+        anyhow!(
+            "project command `{}` is missing command/cmd/run/script/shell",
+            name_hint.unwrap_or("<unnamed>")
+        )
+    })?;
+    let name = json_string_for_keys(map, &["id", "name", "key"])
+        .or_else(|| name_hint.and_then(nonempty_trimmed))
+        .or_else(|| json_string_for_keys(map, &["label", "title"]))
+        .ok_or_else(|| anyhow!("project command object is missing a name or id"))?;
+    let label = json_string_for_keys(map, &["label", "title", "name"])
+        .unwrap_or_else(|| name.clone());
+    let cwd = json_string_for_keys(map, &["cwd", "working_directory", "workingDir"]);
+
+    Ok(ProjectCommandDefinition {
+        name,
+        label,
+        command,
+        cwd,
+        source: source.to_path_buf(),
+    })
+}
+
+fn parse_project_commands_from_value(
+    value: &Value,
+    source: &Path,
+) -> Result<Vec<ProjectCommandDefinition>> {
+    let root = value
+        .as_object()
+        .ok_or_else(|| anyhow!("{} must contain a JSON object", source.display()))?;
+    let commands = root
+        .get("commands")
+        .or_else(|| root.get("customCommands"))
+        .ok_or_else(|| {
+            anyhow!(
+                "{} does not contain a commands object or array",
+                source.display()
+            )
+        })?;
+
+    let mut parsed = Vec::new();
+    match commands {
+        Value::Object(map) => {
+            for (name, value) in map {
+                parsed.push(parse_project_command_entry(Some(name), value, source)?);
+            }
+        }
+        Value::Array(items) => {
+            for (index, value) in items.iter().enumerate() {
+                parsed.push(parse_project_command_entry(None, value, source).with_context(|| {
+                    format!("invalid project command at commands[{index}]")
+                })?);
+            }
+        }
+        _ => bail!("{} commands must be an object or array", source.display()),
+    }
+    Ok(parsed)
+}
+
+fn load_project_commands_from_path(path: &Path) -> Result<Vec<ProjectCommandDefinition>> {
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("failed to read project command config {}", path.display()))?;
+    let value: Value = serde_json::from_str(&raw)
+        .with_context(|| format!("project command config {} is not valid JSON", path.display()))?;
+    parse_project_commands_from_value(&value, path)
+}
+
+fn find_project_command_config_in(start: &Path) -> Option<PathBuf> {
+    let mut current = if start.is_file() {
+        start.parent()?.to_path_buf()
+    } else {
+        start.to_path_buf()
+    };
+
+    loop {
+        for file_name in PROJECT_COMMAND_CONFIG_FILES {
+            let candidate = current.join(file_name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+        if !current.pop() {
+            return None;
+        }
+    }
+}
+
+fn project_command_config_path(args: &[String]) -> Result<PathBuf> {
+    if let Some(raw) = parse_opt(args, "--config") {
+        return Ok(PathBuf::from(raw));
+    }
+    let start = parse_opt(args, "--project")
+        .map(PathBuf::from)
+        .map(Ok)
+        .unwrap_or_else(env::current_dir)
+        .context("failed to resolve current directory")?;
+    find_project_command_config_in(&start).ok_or_else(|| {
+        anyhow!(
+            "no cmux.json or limux.json found from {} upward",
+            start.display()
+        )
+    })
+}
+
+fn project_command_arg(args: &[String]) -> Option<String> {
+    let mut index = 0usize;
+    while index < args.len() {
+        let arg = &args[index];
+        if matches!(
+            arg.as_str(),
+            "--project" | "--config" | "--cwd" | "--name"
+        ) {
+            index += 2;
+            continue;
+        }
+        if arg.starts_with('-') {
+            index += 1;
+            continue;
+        }
+        return nonempty_trimmed(arg);
+    }
+    None
+}
+
+fn resolved_project_command_cwd(
+    definition: &ProjectCommandDefinition,
+    override_cwd: Option<String>,
+) -> String {
+    let raw = override_cwd
+        .or_else(|| definition.cwd.clone())
+        .unwrap_or_else(|| {
+            definition
+                .source
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .to_string_lossy()
+                .to_string()
+        });
+    let path = PathBuf::from(&raw);
+    if path.is_absolute() {
+        raw
+    } else {
+        definition
+            .source
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(path)
+            .to_string_lossy()
+            .to_string()
+    }
+}
+
+fn project_commands_payload(config: &Path, commands: &[ProjectCommandDefinition]) -> Value {
+    let rows = commands
+        .iter()
+        .map(|command| {
+            json!({
+                "name": command.name.clone(),
+                "label": command.label.clone(),
+                "command": command.command.clone(),
+                "cwd": resolved_project_command_cwd(command, None),
+                "config": config.to_string_lossy().to_string(),
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "config": config.to_string_lossy().to_string(),
+        "commands": rows,
+    })
+}
+
+fn project_commands_text(payload: &Value) -> String {
+    let Some(commands) = payload.get("commands").and_then(Value::as_array) else {
+        return "none".to_string();
+    };
+    if commands.is_empty() {
+        return "none".to_string();
+    }
+    commands
+        .iter()
+        .map(|command| {
+            let name = get_string(command, &["name"]).unwrap_or_else(|| "<unnamed>".to_string());
+            let label = get_string(command, &["label"]).unwrap_or_else(|| name.clone());
+            let cwd = get_string(command, &["cwd"]).unwrap_or_else(|| "none".to_string());
+            let body = get_string(command, &["command"]).unwrap_or_default();
+            format!("name={name} label={label} cwd={cwd} command={body}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn load_project_commands_for_args(
+    args: &[String],
+) -> Result<(PathBuf, Vec<ProjectCommandDefinition>)> {
+    let config = project_command_config_path(args)?;
+    let commands = load_project_commands_from_path(&config)?;
+    Ok((config, commands))
+}
+
+fn build_project_command_workspace_request(
+    args: &[String],
+) -> Result<ProjectCommandWorkspaceRequest> {
+    let command_name =
+        project_command_arg(args).ok_or_else(|| anyhow!("run-command requires a command name"))?;
+    let (config, commands) = load_project_commands_for_args(args)?;
+    let definition = commands
+        .iter()
+        .find(|command| command.name == command_name || command.label == command_name)
+        .ok_or_else(|| {
+            anyhow!(
+                "project command `{command_name}` not found in {}",
+                config.display()
+            )
+        })?;
+    let workspace_name = parse_opt(args, "--name")
+        .and_then(|value| nonempty_trimmed(&value))
+        .unwrap_or_else(|| definition.label.clone());
+    let cwd = resolved_project_command_cwd(definition, parse_opt(args, "--cwd"));
+    Ok(ProjectCommandWorkspaceRequest {
+        command_name: definition.name.clone(),
+        workspace_name,
+        command: definition.command.clone(),
+        cwd,
+        config,
+    })
 }
 
 fn read_json_map(path: &str) -> BTreeMap<String, String> {
@@ -1961,6 +2275,65 @@ export default limuxSessionRestore;
 "#
         .replace("__LIMUX_COMMAND__", &limux_command_json),
     )
+}
+
+fn list_project_commands(args: &[String]) -> Result<Value> {
+    let (config, commands) = load_project_commands_for_args(args)?;
+    Ok(project_commands_payload(&config, &commands))
+}
+
+async fn run_project_command(client: &mut Client, args: &[String]) -> Result<Value> {
+    let request = build_project_command_workspace_request(args)?;
+    let mut params = Map::new();
+    params.insert("name".to_string(), Value::String(request.workspace_name));
+    params.insert("command".to_string(), Value::String(request.command));
+    params.insert("cwd".to_string(), Value::String(request.cwd));
+
+    let mut created = client
+        .call("workspace.create", Value::Object(params))
+        .await
+        .context("project command workspace.create failed")?;
+    if let Some(map) = created.as_object_mut() {
+        map.insert(
+            "project_command".to_string(),
+            Value::String(request.command_name),
+        );
+        map.insert(
+            "project_command_config".to_string(),
+            Value::String(request.config.to_string_lossy().to_string()),
+        );
+    }
+    Ok(created)
+}
+
+async fn run_project_commands_command(
+    client: &mut Client,
+    args: &[String],
+    json_output: bool,
+) -> Result<CommandOutput> {
+    let subcommand = args.first().map(String::as_str);
+    if matches!(subcommand, Some("run")) {
+        let payload = run_project_command(client, &args[1..]).await?;
+        if json_output {
+            Ok(CommandOutput::Json(payload))
+        } else {
+            let handle = handle_from_payload(&payload, "workspace_id", "workspace_ref");
+            let command = get_string(&payload, &["project_command"]).unwrap_or_default();
+            Ok(CommandOutput::Text(format!("OK {handle} command={command}")))
+        }
+    } else if subcommand.is_none()
+        || matches!(subcommand, Some("list"))
+        || parse_flag(args, "--list")
+    {
+        let payload = list_project_commands(args)?;
+        if json_output {
+            Ok(CommandOutput::Json(payload))
+        } else {
+            Ok(CommandOutput::Text(project_commands_text(&payload)))
+        }
+    } else {
+        bail!("commands supports `list` or `run <name>`")
+    }
 }
 
 async fn run_new_workspace(client: &mut Client, args: &[String]) -> Result<Value> {
@@ -3808,6 +4181,19 @@ async fn execute_command(client: &mut Client, opts: &GlobalOptions) -> Result<Co
             }
         }
         "hooks" => return run_hooks_command(client, args, opts.json_output).await,
+        "commands" | "custom-commands" => {
+            return run_project_commands_command(client, args, opts.json_output).await;
+        }
+        "run-command" => {
+            let payload = run_project_command(client, args).await?;
+            if opts.json_output {
+                CommandOutput::Json(payload)
+            } else {
+                let handle = handle_from_payload(&payload, "workspace_id", "workspace_ref");
+                let command = get_string(&payload, &["project_command"]).unwrap_or_default();
+                CommandOutput::Text(format!("OK {handle} command={command}"))
+            }
+        }
         "new-workspace" => {
             let payload = run_new_workspace(client, args).await?;
             if opts.json_output {
@@ -4092,6 +4478,116 @@ mod cli_arg_tests {
         let dev = Path::new("/repo/target/debug/limux-cli");
         let candidates = host_binary_candidates(dev);
         assert!(candidates.contains(&PathBuf::from("/repo/target/debug/limux")));
+    }
+
+    #[test]
+    fn project_command_parser_accepts_object_and_array_forms() {
+        let source = Path::new("/repo/cmux.json");
+        let parsed = parse_project_commands_from_value(
+            &json!({
+                "commands": {
+                    "dev": "npm run dev",
+                    "test": {
+                        "label": "Tests",
+                        "cmd": ["npm", "test"],
+                        "cwd": "web"
+                    }
+                }
+            }),
+            source,
+        )
+        .expect("project commands");
+
+        let dev = parsed.iter().find(|command| command.name == "dev").unwrap();
+        assert_eq!(dev.label, "dev");
+        assert_eq!(dev.command, "npm run dev");
+        assert_eq!(resolved_project_command_cwd(dev, None), "/repo");
+
+        let test = parsed.iter().find(|command| command.name == "test").unwrap();
+        assert_eq!(test.label, "Tests");
+        assert_eq!(test.command, "'npm' 'test'");
+        assert_eq!(resolved_project_command_cwd(test, None), "/repo/web");
+
+        let array = parse_project_commands_from_value(
+            &json!({
+                "commands": [{
+                    "id": "lint",
+                    "run": "cargo clippy",
+                    "cwd": "."
+                }]
+            }),
+            source,
+        )
+        .expect("array commands");
+        assert_eq!(array[0].name, "lint");
+        assert_eq!(array[0].command, "cargo clippy");
+    }
+
+    #[test]
+    fn project_command_config_search_prefers_nearest_then_cmux() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let nested = root.join("a/b");
+        fs::create_dir_all(&nested).expect("nested dirs");
+        fs::write(root.join("cmux.json"), r#"{"commands":{"root":"echo root"}}"#)
+            .expect("root cmux");
+        fs::write(nested.join("limux.json"), r#"{"commands":{"nested":"echo nested"}}"#)
+            .expect("nested limux");
+
+        assert_eq!(
+            find_project_command_config_in(&nested),
+            Some(nested.join("limux.json"))
+        );
+
+        fs::write(nested.join("cmux.json"), r#"{"commands":{"cmux":"echo cmux"}}"#)
+            .expect("nested cmux");
+        assert_eq!(
+            find_project_command_config_in(&nested),
+            Some(nested.join("cmux.json"))
+        );
+    }
+
+    #[test]
+    fn project_command_workspace_request_resolves_cwd_and_name() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("cmux.json");
+        fs::write(
+            &config,
+            r#"{
+                "commands": {
+                    "dev": {
+                        "label": "Dev server",
+                        "command": "npm run dev",
+                        "cwd": "web"
+                    }
+                }
+            }"#,
+        )
+        .expect("config");
+
+        let request = build_project_command_workspace_request(&args(&[
+            "--config",
+            config.to_str().unwrap(),
+            "dev",
+        ]))
+        .expect("workspace request");
+        assert_eq!(request.command_name, "dev");
+        assert_eq!(request.workspace_name, "Dev server");
+        assert_eq!(request.command, "npm run dev");
+        assert_eq!(request.cwd, dir.path().join("web").to_string_lossy().to_string());
+
+        let named = build_project_command_workspace_request(&args(&[
+            "--config",
+            config.to_str().unwrap(),
+            "--name",
+            "Frontend",
+            "--cwd",
+            "/tmp/frontend",
+            "dev",
+        ]))
+        .expect("named workspace request");
+        assert_eq!(named.workspace_name, "Frontend");
+        assert_eq!(named.cwd, "/tmp/frontend");
     }
 
     #[test]

@@ -127,6 +127,21 @@ limux ssh -- bastion.example.com 'tmux attach'
 This is the first SSH-workspace parity slice. Remote browser networking and
 image drag/upload through `scp` are still tracked in the cmux parity contract.
 
+## Project custom commands
+
+Limux reads project commands from `cmux.json` or `limux.json` and can launch
+them as new command workspaces from the CLI:
+
+```bash
+limux commands
+limux run-command dev
+limux commands run test --project "$PWD"
+```
+
+See [`docs/custom-commands.md`](docs/custom-commands.md) for the accepted
+schema. The in-app command palette integration remains tracked in the cmux
+parity contract.
+
 ## Agent integrations
 
 Limux ships first-class hooks for coding agents (Codex, Claude Code, and
