@@ -229,6 +229,8 @@ fn print_help() {
             "  tab-action --action <name> [--workspace <id|ref>] [--tab <id|ref>] [--title <text>] [--url <url>]\n",
             "  browser [--surface <id|ref>|<surface>] <subcommand> ...\n",
             "      browser profiles [--browser <name>] [--include-missing]\n",
+            "      browser profile-data --profile-path <path> [--family chromium|firefox] [--types cookies,history,sessions] --dry-run\n",
+            "      browser profile-data --profile-path <path> --allow-profile-read --out-dir <dir>\n",
             "      browser import-cookies --file <path> [--format auto|json|netscape]\n",
             "  list-notifications [--unread]\n",
             "  clear-notifications [--id <notification-id>]\n",
@@ -745,6 +747,469 @@ fn browser_profiles_payload_in(
         "missing_browsers": missing_browsers,
         "note": "Profile discovery reports local store paths only; cookie database extraction/decryption, history import, and session import remain open cmux-parity work.",
     })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BrowserProfileDataFamily {
+    Chromium,
+    Firefox,
+}
+
+impl BrowserProfileDataFamily {
+    fn parse(raw: &str) -> Result<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "chromium" | "chrome" | "brave" | "edge" | "vivaldi" => Ok(Self::Chromium),
+            "firefox" | "mozilla" => Ok(Self::Firefox),
+            other => bail!("browser profile-data --family must be chromium|firefox, got {other}"),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Chromium => "chromium",
+            Self::Firefox => "firefox",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BrowserProfileDataKind {
+    Cookies,
+    History,
+    Sessions,
+}
+
+impl BrowserProfileDataKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Cookies => "cookies",
+            Self::History => "history",
+            Self::Sessions => "sessions",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BrowserProfileDataStore {
+    kind: BrowserProfileDataKind,
+    role: &'static str,
+    path: PathBuf,
+}
+
+fn parse_browser_profile_data_types(raw: Option<&str>) -> Result<Vec<BrowserProfileDataKind>> {
+    let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(vec![
+            BrowserProfileDataKind::Cookies,
+            BrowserProfileDataKind::History,
+            BrowserProfileDataKind::Sessions,
+        ]);
+    };
+
+    let mut kinds = Vec::new();
+    for part in raw
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+    {
+        let kind = match part.to_ascii_lowercase().as_str() {
+            "all" => {
+                return Ok(vec![
+                    BrowserProfileDataKind::Cookies,
+                    BrowserProfileDataKind::History,
+                    BrowserProfileDataKind::Sessions,
+                ]);
+            }
+            "cookie" | "cookies" => BrowserProfileDataKind::Cookies,
+            "history" | "histories" => BrowserProfileDataKind::History,
+            "session" | "sessions" | "session-store" | "session_store" => {
+                BrowserProfileDataKind::Sessions
+            }
+            other => bail!(
+                "browser profile-data --types entries must be cookies|history|sessions|all, got {other}"
+            ),
+        };
+        if !kinds.contains(&kind) {
+            kinds.push(kind);
+        }
+    }
+
+    if kinds.is_empty() {
+        bail!("browser profile-data --types did not contain any supported entries");
+    }
+    Ok(kinds)
+}
+
+fn infer_browser_profile_data_family(profile_path: &Path) -> Option<BrowserProfileDataFamily> {
+    if profile_path.join("Network/Cookies").exists()
+        || profile_path.join("Cookies").exists()
+        || profile_path.join("History").exists()
+        || profile_path.join("Sessions").exists()
+        || profile_path.join("Preferences").exists()
+    {
+        return Some(BrowserProfileDataFamily::Chromium);
+    }
+    if profile_path.join("cookies.sqlite").exists()
+        || profile_path.join("places.sqlite").exists()
+        || profile_path.join("sessionstore.jsonlz4").exists()
+        || profile_path.join("sessionstore-backups").exists()
+    {
+        return Some(BrowserProfileDataFamily::Firefox);
+    }
+    None
+}
+
+fn browser_profile_data_stores(
+    profile_path: &Path,
+    family: BrowserProfileDataFamily,
+    kinds: &[BrowserProfileDataKind],
+) -> Vec<BrowserProfileDataStore> {
+    let wants = |kind| kinds.contains(&kind);
+    let mut stores = Vec::new();
+    match family {
+        BrowserProfileDataFamily::Chromium => {
+            if wants(BrowserProfileDataKind::Cookies) {
+                stores.push(BrowserProfileDataStore {
+                    kind: BrowserProfileDataKind::Cookies,
+                    role: "chromium_network_cookies",
+                    path: profile_path.join("Network/Cookies"),
+                });
+                stores.push(BrowserProfileDataStore {
+                    kind: BrowserProfileDataKind::Cookies,
+                    role: "chromium_legacy_cookies",
+                    path: profile_path.join("Cookies"),
+                });
+            }
+            if wants(BrowserProfileDataKind::History) {
+                stores.push(BrowserProfileDataStore {
+                    kind: BrowserProfileDataKind::History,
+                    role: "chromium_history",
+                    path: profile_path.join("History"),
+                });
+            }
+            if wants(BrowserProfileDataKind::Sessions) {
+                stores.push(BrowserProfileDataStore {
+                    kind: BrowserProfileDataKind::Sessions,
+                    role: "chromium_sessions",
+                    path: profile_path.join("Sessions"),
+                });
+            }
+        }
+        BrowserProfileDataFamily::Firefox => {
+            if wants(BrowserProfileDataKind::Cookies) {
+                stores.push(BrowserProfileDataStore {
+                    kind: BrowserProfileDataKind::Cookies,
+                    role: "firefox_cookies_sqlite",
+                    path: profile_path.join("cookies.sqlite"),
+                });
+            }
+            if wants(BrowserProfileDataKind::History) {
+                stores.push(BrowserProfileDataStore {
+                    kind: BrowserProfileDataKind::History,
+                    role: "firefox_places_sqlite",
+                    path: profile_path.join("places.sqlite"),
+                });
+            }
+            if wants(BrowserProfileDataKind::Sessions) {
+                stores.push(BrowserProfileDataStore {
+                    kind: BrowserProfileDataKind::Sessions,
+                    role: "firefox_sessionstore",
+                    path: profile_path.join("sessionstore.jsonlz4"),
+                });
+                stores.push(BrowserProfileDataStore {
+                    kind: BrowserProfileDataKind::Sessions,
+                    role: "firefox_session_backups",
+                    path: profile_path.join("sessionstore-backups"),
+                });
+            }
+        }
+    }
+    stores
+}
+
+fn safe_path_component(raw: &str) -> String {
+    let sanitized = raw
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if sanitized.is_empty() {
+        "profile".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn safe_profile_label(profile_path: &Path) -> String {
+    profile_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(safe_path_component)
+        .unwrap_or_else(|| "profile".to_string())
+}
+
+fn profile_store_destination(
+    out_dir: &Path,
+    profile_path: &Path,
+    family: BrowserProfileDataFamily,
+    store: &BrowserProfileDataStore,
+) -> PathBuf {
+    let mut destination = out_dir
+        .join(family.as_str())
+        .join(safe_profile_label(profile_path))
+        .join(store.kind.as_str());
+    let relative = store
+        .path
+        .strip_prefix(profile_path)
+        .ok()
+        .filter(|path| path.components().next().is_some());
+    if let Some(relative) = relative {
+        for component in relative.components() {
+            if let std::path::Component::Normal(name) = component {
+                destination.push(safe_path_component(&name.to_string_lossy()));
+            }
+        }
+    } else if let Some(name) = store.path.file_name().and_then(|name| name.to_str()) {
+        destination.push(safe_path_component(name));
+    } else {
+        destination.push(store.role);
+    }
+    destination
+}
+
+fn copy_regular_file_no_overwrite(source: &Path, destination: &Path) -> Result<u64> {
+    if destination.exists() {
+        bail!(
+            "refusing to overwrite existing file {}",
+            destination.display()
+        );
+    }
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::copy(source, destination).with_context(|| {
+        format!(
+            "failed to copy {} to {}",
+            source.display(),
+            destination.display()
+        )
+    })
+}
+
+fn copy_profile_store_path_no_overwrite(
+    source: &Path,
+    destination: &Path,
+) -> Result<(usize, u64, Vec<Value>)> {
+    let metadata = fs::symlink_metadata(source)
+        .with_context(|| format!("failed to inspect {}", source.display()))?;
+    if metadata.file_type().is_symlink() {
+        bail!("refusing to copy symlink {}", source.display());
+    }
+    if metadata.is_file() {
+        let bytes = copy_regular_file_no_overwrite(source, destination)?;
+        return Ok((1, bytes, Vec::new()));
+    }
+    if metadata.is_dir() {
+        return copy_profile_store_dir_no_overwrite(source, destination);
+    }
+    bail!(
+        "unsupported browser profile store type at {}",
+        source.display()
+    );
+}
+
+fn copy_profile_store_dir_no_overwrite(
+    source: &Path,
+    destination: &Path,
+) -> Result<(usize, u64, Vec<Value>)> {
+    fs::create_dir_all(destination)
+        .with_context(|| format!("failed to create {}", destination.display()))?;
+    let mut copied_files = 0usize;
+    let mut copied_bytes = 0u64;
+    let mut skipped = Vec::new();
+
+    for entry in
+        fs::read_dir(source).with_context(|| format!("failed to read {}", source.display()))?
+    {
+        let entry =
+            entry.with_context(|| format!("failed to read entry in {}", source.display()))?;
+        let path = entry.path();
+        let file_name = entry.file_name();
+        let target = destination.join(safe_path_component(&file_name.to_string_lossy()));
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("failed to inspect {}", path.display()))?;
+        if file_type.is_symlink() {
+            skipped.push(json!({
+                "source": path.display().to_string(),
+                "reason": "symlink skipped",
+            }));
+            continue;
+        }
+        if file_type.is_file() {
+            copied_bytes =
+                copied_bytes.saturating_add(copy_regular_file_no_overwrite(&path, &target)?);
+            copied_files = copied_files.saturating_add(1);
+        } else if file_type.is_dir() {
+            let (child_files, child_bytes, mut child_skipped) =
+                copy_profile_store_dir_no_overwrite(&path, &target)?;
+            copied_files = copied_files.saturating_add(child_files);
+            copied_bytes = copied_bytes.saturating_add(child_bytes);
+            skipped.append(&mut child_skipped);
+        } else {
+            skipped.push(json!({
+                "source": path.display().to_string(),
+                "reason": "unsupported file type skipped",
+            }));
+        }
+    }
+
+    Ok((copied_files, copied_bytes, skipped))
+}
+
+fn browser_profile_data_payload(
+    profile_path: &Path,
+    family: Option<BrowserProfileDataFamily>,
+    kinds: &[BrowserProfileDataKind],
+    dry_run: bool,
+    allow_profile_read: bool,
+    out_dir: Option<&Path>,
+) -> Result<Value> {
+    let metadata = fs::metadata(profile_path)
+        .with_context(|| format!("failed to inspect profile path {}", profile_path.display()))?;
+    if !metadata.is_dir() {
+        bail!(
+            "browser profile path must be a directory: {}",
+            profile_path.display()
+        );
+    }
+    let profile_path = profile_path
+        .canonicalize()
+        .unwrap_or_else(|_| profile_path.to_path_buf());
+    let family = family
+        .or_else(|| infer_browser_profile_data_family(&profile_path))
+        .ok_or_else(|| {
+            anyhow!(
+                "could not infer browser profile family for {}; pass --family chromium|firefox",
+                profile_path.display()
+            )
+        })?;
+
+    if !dry_run && !allow_profile_read {
+        bail!(
+            "refusing to read browser profile data without --allow-profile-read; use --dry-run for a manifest only"
+        );
+    }
+    if !dry_run && out_dir.is_none() {
+        bail!("browser profile-data requires --out-dir <path> when copying profile data");
+    }
+
+    let stores = browser_profile_data_stores(&profile_path, family, kinds);
+    let mut rows = Vec::new();
+    let mut existing_store_count = 0usize;
+    let mut copied_store_count = 0usize;
+    let mut copied_file_count = 0usize;
+    let mut copied_bytes = 0u64;
+    let mut skipped = Vec::new();
+
+    for store in stores {
+        let exists = store.path.exists();
+        let destination = out_dir
+            .map(|out_dir| profile_store_destination(out_dir, &profile_path, family, &store));
+        let mut row = Map::new();
+        row.insert(
+            "kind".to_string(),
+            Value::String(store.kind.as_str().to_string()),
+        );
+        row.insert("role".to_string(), Value::String(store.role.to_string()));
+        row.insert(
+            "source".to_string(),
+            Value::String(store.path.display().to_string()),
+        );
+        row.insert("exists".to_string(), Value::Bool(exists));
+        if let Some(destination) = &destination {
+            row.insert(
+                "destination".to_string(),
+                Value::String(destination.display().to_string()),
+            );
+        }
+
+        if !exists {
+            row.insert("action".to_string(), Value::String("missing".to_string()));
+            row.insert(
+                "reason".to_string(),
+                Value::String("store path not found".to_string()),
+            );
+            rows.push(Value::Object(row));
+            continue;
+        }
+
+        existing_store_count = existing_store_count.saturating_add(1);
+        let metadata = fs::symlink_metadata(&store.path)
+            .with_context(|| format!("failed to inspect {}", store.path.display()))?;
+        row.insert("is_dir".to_string(), Value::Bool(metadata.is_dir()));
+        row.insert("is_file".to_string(), Value::Bool(metadata.is_file()));
+        if metadata.file_type().is_symlink() {
+            row.insert("action".to_string(), Value::String("skipped".to_string()));
+            row.insert(
+                "reason".to_string(),
+                Value::String("symlink skipped".to_string()),
+            );
+            skipped.push(Value::Object(row.clone()));
+            rows.push(Value::Object(row));
+            continue;
+        }
+
+        if dry_run {
+            row.insert(
+                "action".to_string(),
+                Value::String("would_copy".to_string()),
+            );
+            rows.push(Value::Object(row));
+            continue;
+        }
+
+        let destination = destination.expect("out_dir required for non-dry-run copy");
+        let (files, bytes, mut child_skipped) =
+            copy_profile_store_path_no_overwrite(&store.path, &destination)?;
+        copied_store_count = copied_store_count.saturating_add(1);
+        copied_file_count = copied_file_count.saturating_add(files);
+        copied_bytes = copied_bytes.saturating_add(bytes);
+        row.insert("action".to_string(), Value::String("copied".to_string()));
+        row.insert("copied_files".to_string(), Value::Number(files.into()));
+        row.insert("copied_bytes".to_string(), Value::Number(bytes.into()));
+        if !child_skipped.is_empty() {
+            row.insert(
+                "skipped_children".to_string(),
+                Value::Array(child_skipped.clone()),
+            );
+            skipped.append(&mut child_skipped);
+        }
+        rows.push(Value::Object(row));
+    }
+
+    Ok(json!({
+        "ok": true,
+        "dry_run": dry_run,
+        "requires_consent": !allow_profile_read,
+        "profile_path": profile_path.display().to_string(),
+        "family": family.as_str(),
+        "types": kinds.iter().map(|kind| kind.as_str()).collect::<Vec<_>>(),
+        "out_dir": out_dir.map(|path| path.display().to_string()),
+        "store_count": rows.len(),
+        "existing_store_count": existing_store_count,
+        "copied_store_count": copied_store_count,
+        "copied_file_count": copied_file_count,
+        "copied_bytes": copied_bytes,
+        "stores": rows,
+        "skipped": skipped,
+        "note": "This consent-gated profile-data step only stages raw browser-owned stores. It does not decrypt cookies or import history/sessions into WebKit yet.",
+    }))
 }
 
 impl BrowserCookieImportFormat {
@@ -3755,7 +4220,8 @@ async fn run_browser(
         }
         match arg.as_str() {
             "--workspace" | "--surface" | "--id-format" | "--timeout-ms" | "--load-state"
-            | "--out" | "--file" | "--format" | "--browser" => {
+            | "--out" | "--file" | "--format" | "--browser" | "--profile-path" | "--family"
+            | "--types" | "--out-dir" => {
                 if idx + 1 < browser_args.len() {
                     skip = true;
                 }
@@ -3780,6 +4246,9 @@ async fn run_browser(
         "profile",
         "profiles",
         "list-profiles",
+        "profile-data",
+        "import-profile",
+        "profile-import",
     ];
 
     if !verbs_without_surface.contains(&first.as_str()) {
@@ -3804,6 +4273,28 @@ async fn run_browser(
                 filter.as_deref(),
                 parse_flag(&browser_args, "--include-missing"),
             ))
+        }
+        "profile-data" | "import-profile" | "profile-import" => {
+            let profile_path = parse_opt(&browser_args, "--profile-path")
+                .or_else(|| rest.first().cloned())
+                .ok_or_else(|| anyhow!("browser profile-data requires --profile-path <path>"))?;
+            let family = parse_opt(&browser_args, "--family")
+                .map(|raw| BrowserProfileDataFamily::parse(&raw))
+                .transpose()?;
+            let kinds =
+                parse_browser_profile_data_types(parse_opt(&browser_args, "--types").as_deref())?;
+            let dry_run = parse_flag(&browser_args, "--dry-run");
+            let allow_profile_read = parse_flag(&browser_args, "--allow-profile-read")
+                || parse_flag(&browser_args, "--confirm-profile-read");
+            let out_dir = parse_opt(&browser_args, "--out-dir").map(PathBuf::from);
+            CommandOutput::Json(browser_profile_data_payload(
+                Path::new(&profile_path),
+                family,
+                &kinds,
+                dry_run,
+                allow_profile_read,
+                out_dir.as_deref(),
+            )?)
         }
         "open" | "open-split" | "new" => {
             let url = rest
@@ -5296,6 +5787,84 @@ mod cli_arg_tests {
             false,
         );
         assert_eq!(chrome_payload["profile_count"], 1);
+    }
+
+    #[test]
+    fn browser_profile_data_dry_run_and_copy_are_consent_gated() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let profile = dir.path().join("config/google-chrome/Default");
+        fs::create_dir_all(profile.join("Network")).expect("network dir");
+        fs::create_dir_all(profile.join("Sessions")).expect("sessions dir");
+        fs::write(profile.join("Preferences"), "{}").expect("preferences");
+        fs::write(profile.join("Network/Cookies"), "cookie-db").expect("cookies");
+        fs::write(profile.join("History"), "history-db").expect("history");
+        fs::write(profile.join("Sessions/Session_1"), "session-data").expect("session");
+
+        let kinds =
+            parse_browser_profile_data_types(Some("cookies,history")).expect("profile data types");
+        let dry_run = browser_profile_data_payload(&profile, None, &kinds, true, false, None)
+            .expect("dry-run manifest");
+        assert_eq!(dry_run["dry_run"], true);
+        assert_eq!(dry_run["requires_consent"], true);
+        assert_eq!(dry_run["family"], "chromium");
+        assert_eq!(dry_run["existing_store_count"], 2);
+        assert!(dry_run["stores"]
+            .as_array()
+            .expect("stores")
+            .iter()
+            .any(|row| {
+                row["role"] == "chromium_network_cookies" && row["action"] == "would_copy"
+            }));
+
+        let err = browser_profile_data_payload(&profile, None, &kinds, false, false, None)
+            .expect_err("non-dry-run profile reads require explicit consent");
+        assert!(err.to_string().contains("--allow-profile-read"));
+
+        let out_dir = dir.path().join("staged");
+        let copied =
+            browser_profile_data_payload(&profile, None, &kinds, false, true, Some(&out_dir))
+                .expect("copy profile data");
+        assert_eq!(copied["dry_run"], false);
+        assert_eq!(copied["requires_consent"], false);
+        assert_eq!(copied["copied_store_count"], 2);
+        assert_eq!(copied["copied_file_count"], 2);
+        assert!(out_dir
+            .join("chromium/Default/cookies/Network/Cookies")
+            .exists());
+        assert!(out_dir.join("chromium/Default/history/History").exists());
+    }
+
+    #[test]
+    fn browser_profile_data_finds_firefox_session_stores() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let profile = dir.path().join("firefox/abc.default-release");
+        fs::create_dir_all(profile.join("sessionstore-backups")).expect("backup dir");
+        fs::write(profile.join("cookies.sqlite"), "cookies").expect("cookies");
+        fs::write(profile.join("places.sqlite"), "places").expect("places");
+        fs::write(profile.join("sessionstore.jsonlz4"), "session").expect("session");
+        fs::write(
+            profile.join("sessionstore-backups/recovery.jsonlz4"),
+            "backup",
+        )
+        .expect("backup");
+
+        let kinds = parse_browser_profile_data_types(Some("sessions")).expect("types");
+        let payload = browser_profile_data_payload(
+            &profile,
+            Some(BrowserProfileDataFamily::Firefox),
+            &kinds,
+            true,
+            false,
+            None,
+        )
+        .expect("firefox session manifest");
+        assert_eq!(payload["family"], "firefox");
+        assert_eq!(payload["existing_store_count"], 2);
+        assert!(payload["stores"]
+            .as_array()
+            .expect("stores")
+            .iter()
+            .any(|row| { row["role"] == "firefox_session_backups" && row["is_dir"] == true }));
     }
 
     #[test]
