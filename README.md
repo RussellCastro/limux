@@ -110,6 +110,7 @@ Run the canonical local quality gate before committing:
 
 Repository maintainability rules live in [`docs/maintainability.md`](docs/maintainability.md).
 cmux compatibility is tracked in [`docs/cmux-parity-contract.md`](docs/cmux-parity-contract.md).
+The live terminal control surface is documented in [`docs/scriptable-terminal-api.md`](docs/scriptable-terminal-api.md).
 This fork policy is documented in [`FORK.md`](FORK.md).
 
 ## Remote workspaces

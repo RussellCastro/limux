@@ -21,13 +21,13 @@ Limux has **two control servers**:
    `system.ping`, `system.identify`, `workspace.{current,list,create,
    select,rename,close}`, `pane.list`, `pane.surfaces`, `surface.list`,
    `pane.create` for terminal self-spawn, `surface.send_text`,
-   `surface.send_key`, `surface.read_text`, `surface.health`, and
+   `surface.send_key`, `surface.read_text`, `surface.health`, `surface.clear_history`, and
    `notification.create`, and `sidebar.state` for workspace cwd/git/PR/port/notification metadata. It now supports a first browser-command slice: `browser.open_split` with right-neighbor pane reuse, `browser.navigate`, `browser.back`, `browser.forward`, `browser.reload`, `browser.focus_webview`, `browser.is_webview_focused`, `browser.url.get`, `browser.get.title`, `browser.eval` with JSON-compatible value serialization, `browser.frame.{main,select}` for same-origin frame scoping, `browser.snapshot`, `browser.find.*`, `browser.click`, `browser.fill`, `browser.type`, `browser.check`, `browser.uncheck`, `browser.select`, `browser.focus`, `browser.hover`, `browser.dblclick`, `browser.scroll`, `browser.scroll_into_view`, `browser.press`, `browser.keydown`, `browser.keyup`, page-level `browser.cookies.{get,set,clear}`, native browser profile discovery via `limux browser profiles`, consent-gated raw profile-store staging plus bounded SQLite metadata inspection via `limux browser profile-data`, WebKitGTK cookie-manager import via `limux browser import-cookies --file <path>`, `browser.storage.{get,set,clear}`, `browser.tab.{list,new,switch,close}`, `browser.get.{text,html,value,attr,count,box,styles}`, visible viewport PNG screenshots via `browser.screenshot`, frame-aware stable `@eN` refs across snapshots within the loaded page/frame, and `browser.wait` polling readiness checks with timeout support. `scripts/xvfb-smoke-test.sh` now exercises a live browser split through open/wait/snapshot/find/click/fill/get-value/eval/storage/cookies/frame/tab/screenshot under Xvfb with a throwaway local HTTP fixture. The snapshot/find refs are DOM/ARIA-derived, in-memory, and reset on page load rather than full platform accessibility handles. It still does **NOT** support native Chrome/Firefox cookie decryption, Arc-specific profile discovery, actual history/session ingestion, full accessibility-tree parity, or full cross-frame/platform accessibility refs on the live GTK bridge.
 
 When the GUI is running, the CLI targets the bridge via the runtime
 socket. `list-panes` / `list-panels`, terminal `new-pane --command ...`,
 text injection, key-level injection, `surface-health`, terminal
-`read-screen`, project-command launch through `workspace.create`,
+`read-screen`, exact-surface `clear-history`, project-command launch through `workspace.create`,
 notification list/jump/clear, and `sidebar-state` now work against the running host.
 
 ## Delivery strategy (revised)
@@ -62,8 +62,8 @@ dispatcher parity.
   Limux window.
 - `surface.send_key` now routes to the exact terminal surface when provided,
   so agents can send deterministic key-level control such as Ctrl-C.
-- `surface.health` and `surface.read_text` now route on the live GTK bridge,
-  so agents can inspect peer terminal health and visible screen text.
+- `surface.health`, `surface.read_text`, and `surface.clear_history` now route on the live GTK bridge,
+  so agents can inspect peer terminal health, read visible screen text, and clear the resolved terminal surface.
 - `pane.create` now routes through the GTK bridge for terminal panes. From
   inside an agent terminal, `limux new-pane --direction right --command claude`
   uses `LIMUX_WORKSPACE_ID`, `LIMUX_SURFACE_ID`, and `LIMUX_PANE_ID` to split
@@ -72,7 +72,7 @@ dispatcher parity.
 **Still open (priority order):**
 
 - Browser command bridge parity beyond the current slices: cookie decryption design after the consent-gated profile-data staging/inspection path, actual history/session import, full accessibility-tree parity, storage/cookie edge smokes, and full cross-frame/platform refs.
-- Direct native command-palette activation smoke coverage and a future shared CLI/host project-command parser. CLI project-command discovery/launch is now covered by the Xvfb harness.
+- Live terminal dispatcher parity for pane break/join/last and workspace next/previous/last/reorder/move-to-window.
 - Remaining shortcut remapping parity decisions after the first-class `Ctrl+Shift+P` palette and `Ctrl+,` Settings/Keybindings shortcuts.
 
 ### Phase 3 — `limux notify` + GUI toast/sidebar integration ✅

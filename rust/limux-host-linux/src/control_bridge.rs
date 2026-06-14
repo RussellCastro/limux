@@ -32,6 +32,7 @@ const METHODS: &[&str] = &[
     "surface.list",
     "surface.health",
     "surface.read_text",
+    "surface.clear_history",
     "surface.send_text",
     "surface.send_key",
     "browser.open_split",
@@ -335,6 +336,11 @@ pub enum ControlCommand {
         surface_hint: Option<String>,
         reply: mpsc::Sender<BridgeResult>,
     },
+    ClearSurfaceHistory {
+        target: WorkspaceTarget,
+        surface_hint: Option<String>,
+        reply: mpsc::Sender<BridgeResult>,
+    },
     CreateWorkspace {
         name: Option<String>,
         cwd: Option<String>,
@@ -460,6 +466,7 @@ impl ControlCommand {
             | Self::ListSurfaces { reply, .. }
             | Self::SurfaceHealth { reply, .. }
             | Self::ReadSurfaceText { reply, .. }
+            | Self::ClearSurfaceHistory { reply, .. }
             | Self::CreateWorkspace { reply, .. }
             | Self::SelectWorkspace { reply, .. }
             | Self::RenameWorkspace { reply, .. }
@@ -1488,6 +1495,26 @@ fn handle_method(
             let (reply, rx) = mpsc::channel();
             (
                 ControlCommand::ReadSurfaceText {
+                    target,
+                    surface_hint,
+                    reply,
+                },
+                rx,
+            )
+        }
+        "surface.clear_history" | "clear-history" => {
+            let target = match parse_optional_workspace_target(params, true) {
+                Ok(target) => target,
+                Err(error) => return error_response(id, error),
+            };
+            let surface_hint = match optional_ref_handle(params, &["surface_id", "id"], "surface:")
+            {
+                Ok(surface_hint) => surface_hint,
+                Err(error) => return error_response(id, error),
+            };
+            let (reply, rx) = mpsc::channel();
+            (
+                ControlCommand::ClearSurfaceHistory {
                     target,
                     surface_hint,
                     reply,
@@ -2835,6 +2862,26 @@ mod tests {
 
         assert_eq!(response.error, None);
         assert!(response.result.is_some());
+    }
+
+    #[test]
+    fn clear_history_route_accepts_surface_refs() {
+        let response = dispatch_request(
+            r#"{"id":1,"method":"surface.clear_history","params":{"workspace_id":"workspace:abc","surface_id":"surface:9:tab"}}"#,
+            &|command| match command {
+                ControlCommand::ClearSurfaceHistory {
+                    target,
+                    surface_hint,
+                    reply,
+                } => {
+                    assert_eq!(target, WorkspaceTarget::Handle("workspace:abc".to_string()));
+                    assert_eq!(surface_hint, Some("9:tab".to_string()));
+                    let _ = reply.send(Ok(json!({ "ok": true })));
+                }
+                other => panic!("unexpected command: {other:?}"),
+            },
+        );
+        assert_eq!(response.error, None);
     }
 
     #[test]

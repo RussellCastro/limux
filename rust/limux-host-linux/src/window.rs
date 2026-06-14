@@ -7182,6 +7182,68 @@ fn handle_control_command(state: &State, command: ControlCommand) {
             }
             let _ = reply.send(Ok(payload));
         }
+        ControlCommand::ClearSurfaceHistory {
+            target,
+            surface_hint,
+            reply,
+        } => {
+            let resolved = {
+                let app_state = state.borrow();
+                workspace_index_for_target(&app_state, &target)
+            };
+
+            let Some(index) = resolved else {
+                let _ = reply.send(Err(crate::control_bridge::BridgeError::not_found(
+                    "workspace not found",
+                )));
+                return;
+            };
+
+            let target = {
+                let app_state = state.borrow();
+                let workspace = &app_state.workspaces[index];
+                pane::terminal_handle_for_root(&workspace.root, surface_hint.as_deref()).map(
+                    |(surface_id, handle)| {
+                        (
+                            serde_json::json!({
+                                "workspace_id": workspace.id.as_str(),
+                                "workspace_ref": workspace_ref(&workspace.id),
+                                "surface_id": surface_id.as_str(),
+                                "surface_ref": surface_ref(&surface_id),
+                            }),
+                            handle,
+                        )
+                    },
+                )
+            };
+
+            let Some((mut payload, handle)) = target else {
+                let _ = reply.send(Err(crate::control_bridge::BridgeError::not_found(
+                    "terminal surface not found",
+                )));
+                return;
+            };
+
+            if !handle.perform_binding_action("clear_screen") {
+                let _ = reply.send(Err(crate::control_bridge::BridgeError::internal(
+                    "surface.clear_history failed",
+                )));
+                return;
+            }
+
+            if let Some(map) = payload.as_object_mut() {
+                map.insert("ok".to_string(), serde_json::Value::Bool(true));
+                map.insert(
+                    "surface".to_string(),
+                    serde_json::json!({
+                        "surface_id": map.get("surface_id").cloned().unwrap_or(serde_json::Value::Null),
+                        "surface_ref": map.get("surface_ref").cloned().unwrap_or(serde_json::Value::Null),
+                        "text": "",
+                    }),
+                );
+            }
+            let _ = reply.send(Ok(payload));
+        }
         ControlCommand::SendKey {
             target,
             surface_hint,

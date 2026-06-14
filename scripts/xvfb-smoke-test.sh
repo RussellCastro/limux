@@ -238,6 +238,39 @@ else
   exit 1
 fi
 
+CLEAR_HISTORY_MARKER="LIMUX_CLEAR_HISTORY_SMOKE"
+CLEAR_HISTORY_CMD=$'printf "LIMUX_CLEAR_HISTORY_SMOKE\\n"\n'
+"$LIMUX_CLI" send --workspace claude --surface "$NOTIFY_TARGET_SURFACE" "$CLEAR_HISTORY_CMD" \
+  2>&1 | tee "$LOG_DIR/stage4-clear-send.txt"
+for _ in $(seq 1 40); do
+  "$LIMUX_CLI" --json read-screen --workspace claude --surface "$NOTIFY_TARGET_SURFACE" \
+    2>&1 | tee "$LOG_DIR/stage4-clear-read-before.json"
+  if grep -q "$CLEAR_HISTORY_MARKER" "$LOG_DIR/stage4-clear-read-before.json"; then
+    break
+  fi
+  sleep 0.1
+done
+grep -q "$CLEAR_HISTORY_MARKER" "$LOG_DIR/stage4-clear-read-before.json" \
+  || { echo "FAIL: clear-history marker never appeared before clear"; exit 1; }
+
+"$LIMUX_CLI" --json clear-history --workspace claude --surface "$NOTIFY_TARGET_SURFACE" \
+  2>&1 | tee "$LOG_DIR/stage4-clear-history.json"
+grep -q '"ok"[[:space:]]*:[[:space:]]*true' "$LOG_DIR/stage4-clear-history.json" \
+  || { echo "FAIL: clear-history did not report ok=true"; exit 1; }
+for _ in $(seq 1 20); do
+  "$LIMUX_CLI" --json read-screen --workspace claude --surface "$NOTIFY_TARGET_SURFACE" \
+    2>&1 | tee "$LOG_DIR/stage4-clear-read-after.json"
+  if ! grep -q "$CLEAR_HISTORY_MARKER" "$LOG_DIR/stage4-clear-read-after.json"; then
+    break
+  fi
+  sleep 0.1
+done
+if grep -q "$CLEAR_HISTORY_MARKER" "$LOG_DIR/stage4-clear-read-after.json"; then
+  echo "FAIL: clear-history marker remained visible after clear"
+  exit 1
+fi
+echo "stage 4: OK (by-name send + exact-surface clear-history accepted)"
+
 # --- 8. Stage 5: by-name notify -------------------------------------------
 echo
 echo "== stage 5: notification.create by workspace name =="
