@@ -1195,6 +1195,65 @@ pub fn set_workspace_dragging_all(active: bool) {
     });
 }
 
+fn pane_has_tab_attention(internals: &PaneInternals) -> bool {
+    internals
+        .tab_state
+        .borrow()
+        .tabs
+        .iter()
+        .any(|entry| entry.tab_button.has_css_class("limux-tab-attention"))
+}
+
+fn sync_pane_attention_from_tabs(internals: &PaneInternals) {
+    if pane_has_tab_attention(internals) {
+        internals.pane_outer.add_css_class("limux-pane-attention");
+    } else {
+        internals.pane_outer.remove_css_class("limux-pane-attention");
+    }
+}
+
+pub fn mark_pane_attention(pane_id: u32, tab_id: Option<&str>) -> bool {
+    let Some(internals) = lookup_pane_internals(pane_id) else {
+        return false;
+    };
+
+    internals.pane_outer.add_css_class("limux-pane-attention");
+    if let Some(tab_id) = tab_id {
+        if let Some(entry) = internals
+            .tab_state
+            .borrow()
+            .tabs
+            .iter()
+            .find(|entry| entry.id == tab_id)
+        {
+            entry.tab_button.add_css_class("limux-tab-attention");
+        }
+    }
+
+    true
+}
+
+pub fn clear_pane_attention(pane_id: u32, tab_id: Option<&str>) -> bool {
+    let Some(internals) = lookup_pane_internals(pane_id) else {
+        return false;
+    };
+
+    if let Some(tab_id) = tab_id {
+        if let Some(entry) = internals
+            .tab_state
+            .borrow()
+            .tabs
+            .iter()
+            .find(|entry| entry.id == tab_id)
+        {
+            entry.tab_button.remove_css_class("limux-tab-attention");
+        }
+    }
+
+    sync_pane_attention_from_tabs(&internals);
+    true
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -1318,6 +1377,22 @@ struct TabContextMenuContext {
 // ---------------------------------------------------------------------------
 
 pub const PANE_CSS: &str = r#"
+.limux-pane {
+    border: 1px solid transparent;
+    border-radius: 6px;
+}
+.limux-pane-attention {
+    border-color: @accent_bg_color;
+    box-shadow: inset 0 0 0 1px alpha(@accent_bg_color, 0.55), 0 0 0 1px alpha(@accent_bg_color, 0.2);
+}
+.limux-pane-attention .limux-pane-header {
+    background-color: alpha(@accent_bg_color, 0.08);
+}
+.limux-tab-attention {
+    color: @accent_bg_color;
+    background: alpha(@accent_bg_color, 0.14);
+    box-shadow: inset 0 -2px 0 0 @accent_bg_color;
+}
 .limux-pane-header {
     background-color: @window_bg_color;
     color: @window_fg_color;
@@ -1454,6 +1529,7 @@ pub fn create_pane(
         .hexpand(true)
         .vexpand(true)
         .build();
+    outer.add_css_class("limux-pane");
     outer.set_size_request(MIN_PANE_WIDTH, MIN_PANE_HEIGHT);
 
     // The single header line: tabs (left) + action icons (right)
@@ -3954,6 +4030,21 @@ fn install_content_drop_target(internals: &Rc<PaneInternals>) {
 // Tab activation / removal
 // ---------------------------------------------------------------------------
 
+fn set_parent_pane_attention(content_stack: &gtk::Stack, active: bool) {
+    let mut parent = content_stack.parent();
+    while let Some(widget) = parent {
+        if widget.has_css_class("limux-pane") {
+            if active {
+                widget.add_css_class("limux-pane-attention");
+            } else {
+                widget.remove_css_class("limux-pane-attention");
+            }
+            return;
+        }
+        parent = widget.parent();
+    }
+}
+
 fn activate_tab(
     _tab_strip: &gtk::Box,
     content_stack: &gtk::Stack,
@@ -3967,10 +4058,16 @@ fn activate_tab(
     for entry in &ts.tabs {
         if entry.id == tab_id {
             entry.tab_button.add_css_class("limux-tab-active");
+            entry.tab_button.remove_css_class("limux-tab-attention");
         } else {
             entry.tab_button.remove_css_class("limux-tab-active");
         }
     }
+    let has_tab_attention = ts
+        .tabs
+        .iter()
+        .any(|entry| entry.tab_button.has_css_class("limux-tab-attention"));
+    set_parent_pane_attention(content_stack, has_tab_attention);
 
     if content_stack.child_by_name(tab_id).is_some() {
         content_stack.set_visible_child_name(tab_id);
@@ -5426,6 +5523,8 @@ mod tests {
 
     #[test]
     fn pane_css_keeps_entry_layout_classes_separate_from_shared_theme() {
+        assert!(PANE_CSS.contains(".limux-pane-attention"));
+        assert!(PANE_CSS.contains(".limux-tab-attention"));
         assert!(PANE_CSS.contains(".limux-tab-rename-entry"));
         assert!(PANE_CSS.contains(".limux-browser-url-entry"));
         assert!(PANE_CSS.contains(".limux-browser-search-entry"));

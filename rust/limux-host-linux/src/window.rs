@@ -6117,22 +6117,31 @@ fn handle_control_command(state: &State, command: ControlCommand) {
             let payload = {
                 let mut app_state = state.borrow_mut();
                 if let Some(id) = id {
-                    let cleared_workspace_ids = app_state
+                    let cleared_targets = app_state
                         .notifications
                         .iter()
                         .filter(|notification| notification.id == id)
-                        .map(|notification| notification.target.workspace_id.clone())
+                        .map(|notification| notification.target.clone())
                         .collect::<Vec<_>>();
                     app_state
                         .notifications
                         .retain(|notification| notification.id != id);
-                    for workspace_id in cleared_workspace_ids {
+                    for target in cleared_targets {
+                        clear_pane_attention_if_no_unread_target(&app_state, &target);
                         clear_workspace_unread_if_no_unread_notification(
                             &mut app_state,
-                            &workspace_id,
+                            &target.workspace_id,
                         );
                     }
                 } else {
+                    let cleared_targets = app_state
+                        .notifications
+                        .iter()
+                        .map(|notification| notification.target.clone())
+                        .collect::<Vec<_>>();
+                    for target in cleared_targets {
+                        clear_pane_attention_for_target(&target);
+                    }
                     app_state.notifications.clear();
                     for workspace in &mut app_state.workspaces {
                         clear_workspace_unread_visuals(workspace);
@@ -6167,6 +6176,7 @@ fn handle_control_command(state: &State, command: ControlCommand) {
                         row.unread = false;
                     }
                 }
+                clear_pane_attention_if_no_unread_target(&app_state, &notification.target);
                 clear_workspace_unread_if_no_unread_notification(
                     &mut app_state,
                     &notification.target.workspace_id,
@@ -6505,10 +6515,17 @@ fn switch_workspace(state: &State, idx: usize) {
         let workspace_id = s.workspaces[idx].id.clone();
         let stack_name = format!("ws-{workspace_id}");
         let focus_root = s.workspaces[idx].root.clone();
-        for notification in &mut s.notifications {
-            if notification.target.workspace_id == workspace_id {
+        let cleared_targets = s
+            .notifications
+            .iter_mut()
+            .filter(|notification| notification.target.workspace_id == workspace_id)
+            .map(|notification| {
                 notification.unread = false;
-            }
+                notification.target.clone()
+            })
+            .collect::<Vec<_>>();
+        for target in cleared_targets {
+            clear_pane_attention_for_target(&target);
         }
 
         let unread_handles = if s.workspaces[idx].unread {
@@ -7489,6 +7506,38 @@ fn select_live_notification(
         .or_else(|| notifications.last())
 }
 
+fn mark_pane_attention_for_target(target: &DesktopNotificationTarget, source_focused: bool) {
+    if source_focused {
+        return;
+    }
+    if let Some(pane_id) = target.pane_id {
+        pane::mark_pane_attention(pane_id, target.tab_id.as_deref());
+    }
+}
+
+fn clear_pane_attention_for_target(target: &DesktopNotificationTarget) {
+    if let Some(pane_id) = target.pane_id {
+        pane::clear_pane_attention(pane_id, target.tab_id.as_deref());
+    }
+}
+
+fn clear_pane_attention_if_no_unread_target(
+    state: &AppState,
+    target: &DesktopNotificationTarget,
+) {
+    let Some(pane_id) = target.pane_id else {
+        return;
+    };
+    let has_unread_target = state.notifications.iter().any(|notification| {
+        notification.unread
+            && notification.target.pane_id == Some(pane_id)
+            && notification.target.tab_id == target.tab_id
+    });
+    if !has_unread_target {
+        pane::clear_pane_attention(pane_id, target.tab_id.as_deref());
+    }
+}
+
 fn clear_workspace_unread_visuals(workspace: &mut Workspace) {
     workspace.unread = false;
     workspace.notify_dot.remove_css_class("limux-notify-dot");
@@ -7575,6 +7624,7 @@ fn mark_workspace_unread_with_message(
         String::new(),
         message.to_string(),
     );
+    mark_pane_attention_for_target(&target, source_focused);
 
     let workspace_is_active = idx == active_idx;
     let desktop_request = should_emit_desktop_notification(
