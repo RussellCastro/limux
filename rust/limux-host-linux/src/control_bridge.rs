@@ -101,6 +101,7 @@ const METHODS: &[&str] = &[
     "debug.command_palette.results",
     "debug.notification_panel.visible",
     "debug.notification_panel.close",
+    "debug.attention.state",
 ];
 
 const PARSE_ERROR_CODE: i64 = -32700;
@@ -373,6 +374,8 @@ pub enum ControlCommand {
         title: String,
         subtitle: String,
         body: String,
+        source_pane_id: Option<String>,
+        source_surface_id: Option<String>,
         reply: mpsc::Sender<BridgeResult>,
     },
     ListNotifications {
@@ -406,6 +409,10 @@ pub enum ControlCommand {
         reply: mpsc::Sender<BridgeResult>,
     },
     DebugNotificationPanelClose {
+        reply: mpsc::Sender<BridgeResult>,
+    },
+    DebugAttentionState {
+        target: WorkspaceTarget,
         reply: mpsc::Sender<BridgeResult>,
     },
 }
@@ -468,7 +475,8 @@ impl ControlCommand {
             | Self::DebugCommandPaletteVisible { reply }
             | Self::DebugCommandPaletteResults { reply, .. }
             | Self::DebugNotificationPanelVisible { reply }
-            | Self::DebugNotificationPanelClose { reply } => {
+            | Self::DebugNotificationPanelClose { reply }
+            | Self::DebugAttentionState { reply, .. } => {
                 let _ = reply.send(result);
             }
         }
@@ -1594,6 +1602,14 @@ fn handle_method(
             };
             let subtitle = optional_string(params, &["subtitle"]).unwrap_or_default();
             let body = optional_string(params, &["body", "message"]).unwrap_or_default();
+            let source_pane_id = match optional_ref_handle(params, &["pane_id"], "pane:") {
+                Ok(source_pane_id) => source_pane_id,
+                Err(error) => return error_response(id, error),
+            };
+            let source_surface_id = match optional_ref_handle(params, &["surface_id"], "surface:") {
+                Ok(source_surface_id) => source_surface_id,
+                Err(error) => return error_response(id, error),
+            };
             // allow_name = true: lets agent hooks target a peer by name.
             let target = match parse_optional_workspace_target(params, true) {
                 Ok(target) => target,
@@ -1606,6 +1622,8 @@ fn handle_method(
                     title,
                     subtitle,
                     body,
+                    source_pane_id,
+                    source_surface_id,
                     reply,
                 },
                 rx,
@@ -1678,6 +1696,14 @@ fn handle_method(
         "debug.notification_panel.close" => {
             let (reply, rx) = mpsc::channel();
             (ControlCommand::DebugNotificationPanelClose { reply }, rx)
+        }
+        "debug.attention.state" => {
+            let target = match parse_optional_workspace_target(params, true) {
+                Ok(target) => target,
+                Err(error) => return error_response(id, error),
+            };
+            let (reply, rx) = mpsc::channel();
+            (ControlCommand::DebugAttentionState { target, reply }, rx)
         }
         _ => {
             return error_response(
@@ -2276,6 +2302,31 @@ mod tests {
     }
 
     #[test]
+    fn notification_create_accepts_pane_and_surface_targets() {
+        let response = dispatch_request(
+            r#"{"id":1,"method":"notification.create","params":{"workspace_id":"claude","pane_id":"pane:7","surface_id":"surface:7:tab-a","title":"Ready"}}"#,
+            &|command| match command {
+                ControlCommand::CreateNotification {
+                    target,
+                    title,
+                    source_pane_id,
+                    source_surface_id,
+                    reply,
+                    ..
+                } => {
+                    assert_eq!(target, WorkspaceTarget::Name("claude".to_string()));
+                    assert_eq!(title, "Ready");
+                    assert_eq!(source_pane_id, Some("7".to_string()));
+                    assert_eq!(source_surface_id, Some("7:tab-a".to_string()));
+                    let _ = reply.send(Ok(json!({ "ok": true })));
+                }
+                other => panic!("unexpected command: {other:?}"),
+            },
+        );
+        assert_eq!(response.error, None);
+    }
+
+    #[test]
     fn notification_list_and_clear_routes_parse_flags_and_ids() {
         let listed = dispatch_request(
             r#"{"id":1,"method":"notification.list","params":{"unread_only":true}}"#,
@@ -2372,6 +2423,18 @@ mod tests {
             },
         );
         assert_eq!(panel.error, None);
+
+        let attention = dispatch_request(
+            r#"{"id":5,"method":"debug.attention.state","params":{"workspace_id":"claude"}}"#,
+            &|command| match command {
+                ControlCommand::DebugAttentionState { target, reply } => {
+                    assert_eq!(target, WorkspaceTarget::Name("claude".to_string()));
+                    let _ = reply.send(Ok(json!({ "panes": [] })));
+                }
+                other => panic!("unexpected command: {other:?}"),
+            },
+        );
+        assert_eq!(attention.error, None);
     }
 
     #[test]

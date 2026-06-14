@@ -1271,6 +1271,110 @@ fn surface_health_payload(
     Ok(serde_json::json!({ "surfaces": surfaces }))
 }
 
+fn surface_tab_id(surface_id: &str) -> Option<&str> {
+    surface_id
+        .split_once(':')
+        .map(|(_, tab_id)| tab_id)
+        .filter(|tab_id| !tab_id.is_empty())
+}
+
+fn surface_matches_hint(surface: &pane::SurfaceSummary, hint: &str) -> bool {
+    let requested = normalize_surface_handle(hint);
+    surface.surface_id == requested || surface_tab_id(&surface.surface_id) == Some(requested)
+}
+
+fn notification_target_from_hints(
+    workspace: &Workspace,
+    workspace_id: &str,
+    source_pane_id: Option<&str>,
+    source_surface_id: Option<&str>,
+) -> Result<DesktopNotificationTarget, BridgeError> {
+    let mut pane_id = match source_pane_id {
+        Some(raw) => Some(parse_pane_handle(raw).ok_or_else(|| {
+            BridgeError::invalid_params("notification.create requires a valid pane_id")
+        })?),
+        None => None,
+    };
+
+    if let Some(pane_id) = pane_id {
+        let pane_exists = pane::pane_summaries_for_root(&workspace.root)
+            .iter()
+            .any(|summary| summary.pane_id == pane_id);
+        if !pane_exists {
+            return Err(BridgeError::not_found("pane not found"));
+        }
+    }
+
+    let mut tab_id = None;
+    if let Some(surface_hint) = source_surface_id {
+        let surface = pane::surface_summaries_for_root(&workspace.root)
+            .into_iter()
+            .find(|surface| surface_matches_hint(surface, surface_hint))
+            .ok_or_else(|| BridgeError::not_found("surface not found"))?;
+
+        if pane_id.is_some_and(|pane_id| pane_id != surface.pane_id) {
+            return Err(BridgeError::invalid_params(
+                "notification.create surface_id and pane_id target different panes",
+            ));
+        }
+
+        pane_id = Some(surface.pane_id);
+        tab_id = surface_tab_id(&surface.surface_id).map(ToOwned::to_owned);
+    }
+
+    Ok(DesktopNotificationTarget {
+        workspace_id: workspace_id.to_string(),
+        pane_id,
+        tab_id,
+    })
+}
+
+fn attention_state_payload(state: &AppState, index: usize) -> Option<serde_json::Value> {
+    let workspace = state.workspaces.get(index)?;
+    let panes = pane::attention_summaries_for_root(&workspace.root)
+        .into_iter()
+        .map(|pane| {
+            let tabs = pane
+                .tabs
+                .into_iter()
+                .map(|tab| {
+                    serde_json::json!({
+                        "tab_id": tab.tab_id,
+                        "surface_id": tab.surface_id,
+                        "surface_ref": surface_ref(&tab.surface_id),
+                        "title": tab.title,
+                        "kind": tab.kind,
+                        "selected": tab.selected,
+                        "attention": tab.attention,
+                    })
+                })
+                .collect::<Vec<_>>();
+            serde_json::json!({
+                "pane_id": pane.pane_id,
+                "pane_ref": pane_ref(pane.pane_id),
+                "attention": pane.attention,
+                "tabs": tabs,
+            })
+        })
+        .collect::<Vec<_>>();
+    let unread_notifications = state
+        .notifications
+        .iter()
+        .filter(|notification| {
+            notification.unread && notification.target.workspace_id == workspace.id
+        })
+        .count();
+
+    Some(serde_json::json!({
+        "workspace_id": workspace.id.as_str(),
+        "workspace_ref": workspace_ref(&workspace.id),
+        "workspace_name": workspace.name.as_str(),
+        "unread": workspace.unread,
+        "unread_notifications": unread_notifications,
+        "panes": panes,
+    }))
+}
+
 #[derive(Clone)]
 struct WorkspaceSeedSource {
     workspace_cwd: Option<String>,
@@ -7137,6 +7241,8 @@ fn handle_control_command(state: &State, command: ControlCommand) {
             title,
             subtitle,
             body,
+            source_pane_id,
+            source_surface_id,
             reply,
         } => {
             // Resolve the workspace target. `WorkspaceTarget::Active` maps to
@@ -7154,6 +7260,22 @@ fn handle_control_command(state: &State, command: ControlCommand) {
             };
 
             let ws_id = state.borrow().workspaces[index].id.clone();
+            let target = {
+                let app_state = state.borrow();
+                let workspace = &app_state.workspaces[index];
+                match notification_target_from_hints(
+                    workspace,
+                    &ws_id,
+                    source_pane_id.as_deref(),
+                    source_surface_id.as_deref(),
+                ) {
+                    Ok(target) => target,
+                    Err(error) => {
+                        let _ = reply.send(Err(error));
+                        return;
+                    }
+                }
+            };
 
             // Build the sidebar message: title becomes the bold prefix,
             // subtitle + body are joined with " — " for the body text.
@@ -7164,11 +7286,6 @@ fn handle_control_command(state: &State, command: ControlCommand) {
                 (false, false) => format!("{subtitle} — {body}"),
             };
             let message = workspace_notification_message(&title, &combined_body);
-            let target = DesktopNotificationTarget {
-                workspace_id: ws_id.clone(),
-                pane_id: None,
-                tab_id: None,
-            };
             if let Some(request) =
                 mark_workspace_unread_with_message(state, &ws_id, &message, false, target.clone())
             {
@@ -7268,6 +7385,27 @@ fn handle_control_command(state: &State, command: ControlCommand) {
                 map.insert("closed".to_string(), serde_json::Value::Bool(closed));
             }
             let _ = reply.send(Ok(payload));
+        }
+        ControlCommand::DebugAttentionState { target, reply } => {
+            let resolved = {
+                let app_state = state.borrow();
+                workspace_index_for_target(&app_state, &target)
+            };
+
+            let Some(index) = resolved else {
+                let _ = reply.send(Err(crate::control_bridge::BridgeError::not_found(
+                    "workspace not found",
+                )));
+                return;
+            };
+
+            let result = {
+                let app_state = state.borrow();
+                attention_state_payload(&app_state, index)
+            };
+            let _ = reply.send(result.ok_or_else(|| {
+                crate::control_bridge::BridgeError::not_found("workspace not found")
+            }));
         }
     }
 }

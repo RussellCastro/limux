@@ -2911,6 +2911,23 @@ pub struct SurfaceSummary {
     pub uri: Option<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TabAttentionSummary {
+    pub tab_id: String,
+    pub surface_id: String,
+    pub title: String,
+    pub kind: String,
+    pub selected: bool,
+    pub attention: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PaneAttentionSummary {
+    pub pane_id: u32,
+    pub attention: bool,
+    pub tabs: Vec<TabAttentionSummary>,
+}
+
 fn pane_internals_for_root(root: &gtk::Widget) -> Vec<Rc<PaneInternals>> {
     let mut panes = PANE_REGISTRY.with(|registry| {
         registry
@@ -2944,6 +2961,49 @@ pub fn pane_summaries_for_root(root: &gtk::Widget) -> Vec<PaneSummary> {
                 pane_id,
                 surface_count: tab_state.tabs.len(),
                 active_surface_id,
+            }
+        })
+        .collect()
+}
+
+pub fn attention_summaries_for_root(root: &gtk::Widget) -> Vec<PaneAttentionSummary> {
+    pane_internals_for_root(root)
+        .into_iter()
+        .map(|internals| {
+            let pane_id = internals.pane_id;
+            let tab_state = internals.tab_state.borrow();
+            let active_tab = tab_state.active_tab.as_deref();
+            let tabs = tab_state
+                .tabs
+                .iter()
+                .map(|entry| {
+                    let kind = match &entry.kind {
+                        TabKind::Terminal { .. } => "terminal",
+                        TabKind::Browser { .. } => "browser",
+                        TabKind::Keybinds => "keybinds",
+                    };
+                    let selected = active_tab
+                        .map(|current| current == entry.id)
+                        .unwrap_or_else(|| {
+                            tab_state
+                                .tabs
+                                .first()
+                                .is_some_and(|first| first.id == entry.id)
+                        });
+                    TabAttentionSummary {
+                        tab_id: entry.id.clone(),
+                        surface_id: composite_surface_id(pane_id, &entry.id),
+                        title: entry.title_label.label().to_string(),
+                        kind: kind.to_string(),
+                        selected,
+                        attention: entry.tab_button.has_css_class("limux-tab-attention"),
+                    }
+                })
+                .collect();
+            PaneAttentionSummary {
+                pane_id,
+                attention: internals.pane_outer.has_css_class("limux-pane-attention"),
+                tabs,
             }
         })
         .collect()

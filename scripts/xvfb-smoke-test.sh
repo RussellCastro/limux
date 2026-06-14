@@ -204,6 +204,24 @@ echo "== stage 3: list-workspaces sees both peers =="
 "$LIMUX_CLI" list-workspaces 2>&1 | tee "$LOG_DIR/stage3.txt"
 grep -q codex  "$LOG_DIR/stage3.txt" || { echo "FAIL: list-workspaces missing codex"; exit 1; }
 grep -q claude "$LOG_DIR/stage3.txt" || { echo "FAIL: list-workspaces missing claude"; exit 1; }
+"$LIMUX_CLI" --id-format both --json list-panes --workspace claude \
+  2>&1 | tee "$LOG_DIR/stage3-claude-panes.json"
+read -r NOTIFY_TARGET_PANE NOTIFY_TARGET_SURFACE <<EOF_NOTIFY_TARGET
+$(python3 - "$LOG_DIR/stage3-claude-panes.json" <<'PY_NOTIFY_TARGET'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    payload = json.load(handle)
+panes = payload.get("panes") or []
+if not panes:
+    raise SystemExit("no claude panes found for notification attention smoke")
+first = panes[0]
+print(first.get("pane_id") or "", first.get("active_surface_id") or "")
+PY_NOTIFY_TARGET
+)
+EOF_NOTIFY_TARGET
+[ -n "$NOTIFY_TARGET_PANE" ] || { echo "FAIL: could not identify claude pane for notification attention smoke"; exit 1; }
+[ -n "$NOTIFY_TARGET_SURFACE" ] || { echo "FAIL: could not identify claude surface for notification attention smoke"; exit 1; }
 echo "stage 3: OK"
 
 # --- 7. Stage 4: by-name send (the phase-5 allow_name=true unlock) --------
@@ -223,13 +241,41 @@ fi
 # --- 8. Stage 5: by-name notify -------------------------------------------
 echo
 echo "== stage 5: notification.create by workspace name =="
-if "$LIMUX_CLI" notify --workspace claude --subtitle "smoke" --body "all good" "Smoke test" \
+if "$LIMUX_CLI" notify --workspace claude --pane "$NOTIFY_TARGET_PANE" --surface "$NOTIFY_TARGET_SURFACE" --subtitle "smoke" --body "all good" "Smoke test" \
      2>&1 | tee "$LOG_DIR/stage5.txt"; then
   echo "stage 5: OK (by-name notify accepted)"
 else
   echo "FAIL: by-name notify failed — allow_name=true on notification.create may be regressed"
   exit 1
 fi
+
+"$LIMUX_CLI" --json --request '{"id":"smoke-attention-after-notify","method":"debug.attention.state","params":{"workspace_id":"claude"}}' \
+  2>&1 | tee "$LOG_DIR/stage5-attention-after-notify.json"
+python3 - "$LOG_DIR/stage5-attention-after-notify.json" "$NOTIFY_TARGET_PANE" "$NOTIFY_TARGET_SURFACE" true <<'PY_ASSERT_ATTENTION'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    payload = json.load(handle)
+target_pane = str(sys.argv[2])
+target_surface = sys.argv[3]
+expected = sys.argv[4] == "true"
+panes = payload.get("panes") or []
+pane = next((row for row in panes if str(row.get("pane_id")) == target_pane), None)
+if pane is None:
+    raise SystemExit(f"target pane {target_pane} missing from attention state")
+tabs = pane.get("tabs") or []
+tab = next((row for row in tabs if row.get("surface_id") == target_surface), None)
+if tab is None:
+    raise SystemExit(f"target surface {target_surface} missing from attention state")
+if bool(pane.get("attention")) != expected:
+    raise SystemExit(f"pane attention expected {expected}, got {pane.get('attention')}")
+if bool(tab.get("attention")) != expected:
+    raise SystemExit(f"tab attention expected {expected}, got {tab.get('attention')}")
+if expected and not payload.get("unread"):
+    raise SystemExit("workspace unread flag was not set with attention")
+if not expected and payload.get("unread"):
+    raise SystemExit("workspace unread flag remained set after attention clear")
+PY_ASSERT_ATTENTION
 
 # --- 9. Stage 6: custom commands + notification/sidebar APIs ---------------
 echo
@@ -339,6 +385,33 @@ grep -q '"jumped"[[:space:]]*:[[:space:]]*true' "$LOG_DIR/stage6-notification-ju
   || { echo "FAIL: jump-notification did not report jumped=true"; exit 1; }
 grep -q '"unread"[[:space:]]*:[[:space:]]*false' "$LOG_DIR/stage6-notification-jump.json" \
   || { echo "FAIL: jumped notification did not become read"; exit 1; }
+"$LIMUX_CLI" --json --request '{"id":"smoke-attention-after-jump","method":"debug.attention.state","params":{"workspace_id":"claude"}}' \
+  2>&1 | tee "$LOG_DIR/stage6-attention-after-jump.json"
+python3 - "$LOG_DIR/stage6-attention-after-jump.json" "$NOTIFY_TARGET_PANE" "$NOTIFY_TARGET_SURFACE" false <<'PY_ASSERT_ATTENTION'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    payload = json.load(handle)
+target_pane = str(sys.argv[2])
+target_surface = sys.argv[3]
+expected = sys.argv[4] == "true"
+panes = payload.get("panes") or []
+pane = next((row for row in panes if str(row.get("pane_id")) == target_pane), None)
+if pane is None:
+    raise SystemExit(f"target pane {target_pane} missing from attention state")
+tabs = pane.get("tabs") or []
+tab = next((row for row in tabs if row.get("surface_id") == target_surface), None)
+if tab is None:
+    raise SystemExit(f"target surface {target_surface} missing from attention state")
+if bool(pane.get("attention")) != expected:
+    raise SystemExit(f"pane attention expected {expected}, got {pane.get('attention')}")
+if bool(tab.get("attention")) != expected:
+    raise SystemExit(f"tab attention expected {expected}, got {tab.get('attention')}")
+if expected and not payload.get("unread"):
+    raise SystemExit("workspace unread flag was not set with attention")
+if not expected and payload.get("unread"):
+    raise SystemExit("workspace unread flag remained set after attention clear")
+PY_ASSERT_ATTENTION
 
 "$LIMUX_CLI" --json list-notifications --unread \
   2>&1 | tee "$LOG_DIR/stage6-notifications-after-jump.json"
@@ -353,7 +426,7 @@ if grep -q 'Smoke test' "$LOG_DIR/stage6-notifications-clear.json"; then
   echo "FAIL: clear-notifications did not remove Smoke test notification"
   exit 1
 fi
-echo "stage 6: OK (project commands + native palette/panel shortcuts + notification list/jump/clear + sidebar-state)"
+echo "stage 6: OK (project commands + native palette/panel shortcuts + notification attention/list/jump/clear + sidebar-state)"
 
 # --- 10. Stage 7: self-split pane.create + command injection ---------------
 echo

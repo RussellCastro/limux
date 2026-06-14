@@ -85,12 +85,14 @@ Notification rows retain workspace/pane/tab targets so jump can focus the latest
 unread source or a specific notification by id. The native notifications panel
 opens with `Ctrl+Alt+O` and can jump to, clear one, or clear all live rows.
 Targeted notifications now also mark pane/tab attention CSS rings and clear them
-when the source is focused or notification state is cleared. The host shortcut
+when the source is focused, jumped, or notification state is cleared. `limux notify`
+auto-targets `LIMUX_PANE_ID`/`LIMUX_SURFACE_ID` when called from a Limux terminal,
+and `debug.attention.state` makes ring state observable in the Xvfb harness. The host shortcut
 registry maps `Ctrl+Alt+J` to
 the same latest-notification jump path, and the binding can be remapped through
 `shortcuts.json`. Settings/Keybindings also has a first-class remappable
 `Ctrl+,` shortcut so the settings surface is reachable without the pane toolbar.
-CLI: `limux notify [--workspace <id|name>] [--subtitle <…>] [--body <…>] <title>`.
+CLI: `limux notify [--workspace <id|name>] [--pane <id|ref>] [--surface <id|ref>] [--subtitle <…>] [--body <…>] <title>`.
 
 ### Phase 4 — `limux claude-hook` / `opencode-hook` / `gemini-hook` ✅
 Reads hook JSON from stdin, translates the agent-specific event vocabulary

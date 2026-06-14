@@ -239,7 +239,7 @@ fn print_help() {
             "  clear-notifications [--id <notification-id>]\n",
             "  jump-notification [--id <notification-id>]\n\n",
             "Agent integrations:\n",
-            "  notify [--workspace <id|ref>] [--subtitle <text>] [--body <text>] <title>\n",
+            "  notify [--workspace <id|ref>] [--pane <id|ref>] [--surface <id|ref>] [--subtitle <text>] [--body <text>] <title>\n",
             "  hooks setup [agent] | hooks uninstall [agent] | hooks <agent> <event>\n",
             "  claude-hook | opencode-hook | gemini-hook --event <name> [--subtitle <text>] [--body <text>] [--title <text>]\n",
             "  agent-team [--agents codex,claude[,opencode,gemini]] [--cwd <path>] [--no-launch] [--dry-run]\n",
@@ -2366,16 +2366,32 @@ fn notification_jump_text(payload: &Value) -> String {
 /// `limux notify` — post a notification into the sidebar + toast overlay.
 ///
 /// Usage:
-///   limux notify [--workspace <id|ref>] [--subtitle <text>] [--body <text>] <title>
+///   limux notify [--workspace <id|ref>] [--pane <id|ref>] [--surface <id|ref>] [--subtitle <text>] [--body <text>] <title>
 ///   limux notify --title "..." --subtitle "..." --body "..."
 ///
 /// Mirrors the `cmux notify` shape (title / subtitle / body). Title is
 /// required; subtitle and body are optional. Falls back to the current
-/// workspace via LIMUX_WORKSPACE_ID when --workspace isn't given.
-async fn run_notify(client: &mut Client, args: &[String]) -> Result<Value> {
-    let workspace = parse_opt(args, "--workspace")
-        .or_else(|| env::var("LIMUX_WORKSPACE_ID").ok())
-        .filter(|s| !s.is_empty());
+/// workspace via LIMUX_WORKSPACE_ID when --workspace isn't given, and
+/// pane/surface attention targets via LIMUX_PANE_ID/LIMUX_SURFACE_ID.
+fn build_notify_request(
+    args: &[String],
+    env_lookup: impl Fn(&str) -> Option<String>,
+) -> Result<(Option<String>, Value)> {
+    let explicit_workspace = nonempty(parse_opt(args, "--workspace"));
+    let auto_source_from_env = explicit_workspace.is_none();
+    let workspace = explicit_workspace
+        .clone()
+        .or_else(|| nonempty(env_lookup("LIMUX_WORKSPACE_ID")));
+    let surface = nonempty(parse_opt(args, "--surface").or_else(|| {
+        auto_source_from_env
+            .then(|| env_lookup("LIMUX_SURFACE_ID"))
+            .flatten()
+    }));
+    let pane = nonempty(parse_opt(args, "--pane").or_else(|| {
+        auto_source_from_env
+            .then(|| env_lookup("LIMUX_PANE_ID"))
+            .flatten()
+    }));
 
     // Title can be provided either via --title or as the trailing positional
     // (matching `limux send`'s ergonomics).
@@ -2396,14 +2412,19 @@ async fn run_notify(client: &mut Client, args: &[String]) -> Result<Value> {
     if !body.is_empty() {
         params.insert("body".to_string(), Value::String(body));
     }
+    if let Some(surface) = surface {
+        params.insert("surface_id".to_string(), Value::String(surface));
+    }
+    if let Some(pane) = pane {
+        params.insert("pane_id".to_string(), Value::String(pane));
+    }
 
-    call_in_workspace_scope(
-        client,
-        workspace,
-        "notification.create",
-        Value::Object(params),
-    )
-    .await
+    Ok((workspace, Value::Object(params)))
+}
+
+async fn run_notify(client: &mut Client, args: &[String]) -> Result<Value> {
+    let (workspace, params) = build_notify_request(args, env_opt)?;
+    call_in_workspace_scope(client, workspace, "notification.create", params).await
 }
 
 // ---------------------------------------------------------------------------
@@ -6299,10 +6320,56 @@ mod cli_arg_tests {
             "needs review",
             "--body",
             "blocked",
+            "--surface",
+            "surface:4:tab",
+            "--pane",
+            "pane:4",
             "Input needed",
         ]);
 
         assert_eq!(trailing_title(&args).as_deref(), Some("Input needed"));
+    }
+
+    #[test]
+    fn notify_request_auto_targets_limux_terminal_env() {
+        let env = |name: &str| match name {
+            "LIMUX_WORKSPACE_ID" => Some("workspace-1".to_string()),
+            "LIMUX_PANE_ID" => Some("7".to_string()),
+            "LIMUX_SURFACE_ID" => Some("7:tab-a".to_string()),
+            _ => None,
+        };
+        let (workspace, params) =
+            build_notify_request(&args(&["Ready"]), env).expect("notify request");
+
+        assert_eq!(workspace.as_deref(), Some("workspace-1"));
+        assert_eq!(params["title"], "Ready");
+        assert_eq!(params["pane_id"], "7");
+        assert_eq!(params["surface_id"], "7:tab-a");
+    }
+
+    #[test]
+    fn notify_request_does_not_pair_env_pane_with_explicit_workspace() {
+        let env = |name: &str| match name {
+            "LIMUX_WORKSPACE_ID" => Some("workspace-1".to_string()),
+            "LIMUX_PANE_ID" => Some("7".to_string()),
+            "LIMUX_SURFACE_ID" => Some("7:tab-a".to_string()),
+            _ => None,
+        };
+        let (workspace, params) = build_notify_request(
+            &args(&[
+                "--workspace",
+                "claude",
+                "--surface",
+                "surface:9:tab-b",
+                "Ready",
+            ]),
+            env,
+        )
+        .expect("notify request");
+
+        assert_eq!(workspace.as_deref(), Some("claude"));
+        assert_eq!(params.get("pane_id"), None);
+        assert_eq!(params["surface_id"], "surface:9:tab-b");
     }
 
     #[test]
