@@ -478,6 +478,62 @@ HTTP_PORT="$(cat "$HTTP_PORT_FILE")"
 BROWSER_SMOKE_URL="http://127.0.0.1:$HTTP_PORT/browser-smoke.html"
 BROWSER_SECOND_URL="http://127.0.0.1:$HTTP_PORT/browser-second.html"
 
+"$LIMUX_CLI" --id-format both --json list-panes --workspace claude \
+  2>&1 | tee "$LOG_DIR/stage8-reuse-panes-before.json"
+read -r REUSE_BEFORE_COUNT REUSE_SOURCE_SURFACE <<EOF_REUSE
+$(python3 - "$LOG_DIR/stage8-reuse-panes-before.json" "$RESPONSE_PANE" <<'PY_REUSE'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    payload = json.load(handle)
+right_pane = sys.argv[2]
+panes = payload.get("panes") or []
+source = next((row for row in panes if str(row.get("pane_id")) != right_pane), None)
+if not source:
+    raise SystemExit("no left/source pane found for browser reuse smoke")
+print(len(panes), source.get("active_surface_id") or "")
+PY_REUSE
+)
+EOF_REUSE
+[ -n "$REUSE_SOURCE_SURFACE" ] || { echo "FAIL: browser reuse smoke could not identify source surface"; exit 1; }
+REUSE_REQUEST="$(python3 - "$REUSE_SOURCE_SURFACE" "$BROWSER_SECOND_URL" <<'PY_REQUEST'
+import json
+import sys
+print(json.dumps({
+    "id": 1,
+    "method": "browser.open_split",
+    "params": {
+        "workspace_id": "claude",
+        "surface_id": sys.argv[1],
+        "url": sys.argv[2],
+    },
+}))
+PY_REQUEST
+)"
+"$LIMUX_CLI" --id-format both --json --request "$REUSE_REQUEST" \
+  2>&1 | tee "$LOG_DIR/stage8-reuse-open-split.json"
+grep -q '"created_split"[[:space:]]*:[[:space:]]*false' "$LOG_DIR/stage8-reuse-open-split.json" \
+  || { echo "FAIL: browser.open_split did not reuse the right neighbor pane"; exit 1; }
+grep -q '"target_pane_id"[[:space:]]*:[[:space:]]*"'"$RESPONSE_PANE"'"' "$LOG_DIR/stage8-reuse-open-split.json" \
+  || { echo "FAIL: browser.open_split reused an unexpected target pane"; exit 1; }
+REUSE_SURFACE="$(sed -n 's/.*"surface_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$LOG_DIR/stage8-reuse-open-split.json" | head -1)"
+[ -n "$REUSE_SURFACE" ] || { echo "FAIL: browser reuse response missing surface_id"; exit 1; }
+"$LIMUX_CLI" --id-format both --json list-panes --workspace claude \
+  2>&1 | tee "$LOG_DIR/stage8-reuse-panes-after.json"
+REUSE_AFTER_COUNT="$(python3 - "$LOG_DIR/stage8-reuse-panes-after.json" <<'PY_COUNT'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    print(len((json.load(handle).get("panes") or [])))
+PY_COUNT
+)"
+[ "$REUSE_AFTER_COUNT" = "$REUSE_BEFORE_COUNT" ] \
+  || { echo "FAIL: browser.open_split reuse changed pane count ($REUSE_BEFORE_COUNT -> $REUSE_AFTER_COUNT)"; exit 1; }
+"$LIMUX_CLI" --json browser "$REUSE_SURFACE" wait --selector "#second-ready" --timeout-ms 5000 \
+  2>&1 | tee "$LOG_DIR/stage8-reuse-wait.json"
+grep -q '"ready"[[:space:]]*:[[:space:]]*true' "$LOG_DIR/stage8-reuse-wait.json" \
+  || { echo "FAIL: reused browser surface did not load second page"; exit 1; }
+
 "$LIMUX_CLI" --id-format both --json browser open "$BROWSER_SMOKE_URL" \
   2>&1 | tee "$LOG_DIR/stage8-open.json"
 BROWSER_SURFACE="$(sed -n 's/.*"surface_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$LOG_DIR/stage8-open.json" | head -1)"
@@ -637,7 +693,7 @@ grep -q '"ok"[[:space:]]*:[[:space:]]*true' "$LOG_DIR/stage8-tab-close.json" \
 "$LIMUX_CLI" browser "$BROWSER_SURFACE" screenshot --out "$BROWSER_SHOT" \
   2>&1 | tee "$LOG_DIR/stage8-screenshot.txt"
 [ -s "$BROWSER_SHOT" ] || { echo "FAIL: browser screenshot did not write a non-empty PNG"; exit 1; }
-echo "stage 8: OK (browser bridge open/wait/snapshot/find/click/fill/eval/storage/cookies/frame/tab/screenshot)"
+echo "stage 8: OK (browser bridge right-neighbor reuse + open/wait/snapshot/find/click/fill/eval/storage/cookies/frame/tab/screenshot)"
 
 # --- 12. Stage 9: hook translators end-to-end -----------------------------
 echo

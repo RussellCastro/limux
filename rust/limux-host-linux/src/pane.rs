@@ -2380,7 +2380,7 @@ fn make_terminal_callbacks(
                 }
 
                 let pane_widget: gtk::Widget = pane_outer.clone().upcast();
-                add_browser_tab_to_pane_with_uri(&pane_widget, Some(url));
+                let _ = add_browser_tab_to_pane_with_uri(&pane_widget, Some(url));
             }
         }),
         on_open_browser_here: Box::new({
@@ -2725,21 +2725,28 @@ pub fn add_terminal_tab_to_pane(pane_widget: &gtk::Widget) {
 }
 
 #[allow(dead_code)]
-pub fn add_browser_tab_to_pane(pane_widget: &gtk::Widget) {
-    add_browser_tab_to_pane_with_uri(pane_widget, None);
+pub fn add_browser_tab_to_pane(pane_widget: &gtk::Widget) -> Option<SurfaceSummary> {
+    add_browser_tab_to_pane_with_uri(pane_widget, None)
 }
 
 #[allow(dead_code)]
-pub fn add_browser_tab_to_pane_with_uri(pane_widget: &gtk::Widget, uri: Option<&str>) {
-    if let Some(internals) = find_pane_internals(pane_widget) {
-        let options = uri.map(|uri| BrowserTabOptions {
-            id: None,
-            custom_name: None,
-            pinned: false,
-            uri: Some(uri),
-        });
-        add_browser_tab_inner(&internals, options);
+pub fn add_browser_tab_to_pane_with_uri(
+    pane_widget: &gtk::Widget,
+    uri: Option<&str>,
+) -> Option<SurfaceSummary> {
+    let internals = find_pane_internals(pane_widget)?;
+    let options = uri.map(|uri| BrowserTabOptions {
+        id: None,
+        custom_name: None,
+        pinned: false,
+        uri: Some(uri),
+    });
+    let tab_id = add_browser_tab_inner(&internals, options);
+    if uri.is_some() {
+        (internals.callbacks.on_state_changed)();
     }
+    let surface_id = composite_surface_id(internals.pane_id, &tab_id);
+    active_surface_summary(pane_widget).filter(|surface| surface.surface_id == surface_id)
 }
 
 pub fn add_keybind_editor_tab_to_pane(

@@ -871,6 +871,20 @@ fn focused_ids_for_workspace(state: &State, workspace_id: &str) -> (Option<u32>,
     (Some(surface.pane_id), Some(surface.surface_id))
 }
 
+fn open_browser_tab_in_right_neighbor(
+    state: &State,
+    source_pane: &gtk::Widget,
+    uri: &str,
+) -> Option<(pane::SurfaceSummary, pane::BrowserControlHandle)> {
+    let root = state.borrow().window.clone().upcast::<gtk::Widget>();
+    let target_pane = neighbor_leaf_pane_in_direction(source_pane, &root, Direction::Right)?;
+    let surface = pane::add_browser_tab_to_pane_with_uri(&target_pane, Some(uri))?;
+    let (_surface_id, handle) =
+        pane::browser_handle_for_surface(&target_pane, Some(&surface.surface_id))?;
+    request_session_save(state);
+    Some((surface, handle))
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[allow(dead_code)]
 pub(crate) enum PaneCreateDirection {
@@ -5752,6 +5766,24 @@ fn handle_control_command(state: &State, command: ControlCommand) {
             let target_url = url
                 .or(inherited_url)
                 .unwrap_or_else(|| "about:blank".to_string());
+
+            if let Some((surface, handle)) =
+                open_browser_tab_in_right_neighbor(state, &resolved.pane_widget, &target_url)
+            {
+                let mut payload =
+                    browser_control_payload(&resolved.workspace_id, &surface.surface_id, &handle);
+                if let Some(map) = payload.as_object_mut() {
+                    map.insert(
+                        "target_pane_id".to_string(),
+                        serde_json::Value::String(surface.pane_id.to_string()),
+                    );
+                    map.insert("created_split".to_string(), serde_json::Value::Bool(false));
+                    map.insert("ok".to_string(), serde_json::Value::Bool(true));
+                }
+                let _ = reply.send(Ok(payload));
+                return;
+            }
+
             let initial_state = PaneState::browser_only(Some(&target_url));
 
             let new_pane = split_pane(
@@ -7392,7 +7424,7 @@ pub(crate) fn create_pane_for_workspace(
             },
         ),
         on_open_browser_here: Box::new(move |pane_widget| {
-            pane::add_browser_tab_to_pane(pane_widget);
+            let _ = pane::add_browser_tab_to_pane(pane_widget);
         }),
         on_open_keybinds: Box::new(move |anchor| {
             open_keybind_editor_tab(&state_for_keybinds, anchor);
@@ -8169,7 +8201,7 @@ fn toggle_focused_pane_zoom(state: &State) {
 fn add_tab_to_focused_pane(_state: &State, _browser: bool) {
     if let Some((_ws_id, pane_widget)) = find_focused_pane(_state) {
         if _browser {
-            pane::add_browser_tab_to_pane(&pane_widget);
+            let _ = pane::add_browser_tab_to_pane(&pane_widget);
         } else {
             pane::add_terminal_tab_to_pane(&pane_widget);
         }
@@ -8201,14 +8233,11 @@ struct NeighborScore {
     center_delta: i32,
 }
 
-/// Focus the neighboring pane in the given direction by walking the gtk::Paned tree.
-fn focus_pane_in_direction(state: &State, direction: Direction) {
-    let (_ws_id, pane_widget) = match find_focused_pane(state) {
-        Some(v) => v,
-        None => return,
-    };
-    let root = state.borrow().window.clone().upcast::<gtk::Widget>();
-
+fn neighbor_leaf_pane_in_direction(
+    pane_widget: &gtk::Widget,
+    root: &gtk::Widget,
+    direction: Direction,
+) -> Option<gtk::Widget> {
     // Determine which axis and sides we care about.
     let (target_orientation, must_be_start) = match direction {
         Direction::Left => (gtk::Orientation::Horizontal, false), // must be end_child to go left
@@ -8221,10 +8250,7 @@ fn focus_pane_in_direction(state: &State, direction: Direction) {
     // orientation where the current subtree is on the correct side.
     let mut current: gtk::Widget = pane_widget.clone();
     loop {
-        let parent = match current.parent() {
-            Some(p) => p,
-            None => return, // reached the top without finding a valid split
-        };
+        let parent = current.parent()?;
         if let Some(paned) = parent.downcast_ref::<gtk::Paned>() {
             if paned.orientation() == target_orientation {
                 let is_start = paned.start_child().map(|c| c == current).unwrap_or(false);
@@ -8234,26 +8260,36 @@ fn focus_pane_in_direction(state: &State, direction: Direction) {
                         paned.end_child()
                     } else {
                         paned.start_child()
-                    };
-                    if let Some(sibling) = sibling {
-                        let leaf =
-                            best_directional_leaf_pane(&pane_widget, &sibling, &root, direction)
-                                .unwrap_or_else(|| {
-                                    // Fall back to the old edge-based heuristic if bounds
-                                    // are unavailable for some reason.
-                                    let prefer_start = !must_be_start;
-                                    find_leaf_pane(&sibling, target_orientation, prefer_start)
-                                });
-                        // Find the GLArea inside the pane and focus it directly
-                        if let Some(gl) = find_gl_area(&leaf) {
-                            gl.grab_focus();
-                        }
-                    }
-                    return;
+                    }?;
+                    return Some(
+                        best_directional_leaf_pane(pane_widget, &sibling, root, direction)
+                            .unwrap_or_else(|| {
+                                // Fall back to the old edge-based heuristic if bounds
+                                // are unavailable for some reason.
+                                let prefer_start = !must_be_start;
+                                find_leaf_pane(&sibling, target_orientation, prefer_start)
+                            }),
+                    );
                 }
             }
         }
         current = parent;
+    }
+}
+
+/// Focus the neighboring pane in the given direction by walking the gtk::Paned tree.
+fn focus_pane_in_direction(state: &State, direction: Direction) {
+    let (_ws_id, pane_widget) = match find_focused_pane(state) {
+        Some(v) => v,
+        None => return,
+    };
+    let root = state.borrow().window.clone().upcast::<gtk::Widget>();
+    let Some(leaf) = neighbor_leaf_pane_in_direction(&pane_widget, &root, direction) else {
+        return;
+    };
+    // Find the GLArea inside the pane and focus it directly.
+    if let Some(gl) = find_gl_area(&leaf) {
+        gl.grab_focus();
     }
 }
 
