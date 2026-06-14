@@ -40,7 +40,7 @@ struct LiveNotification {
     title: String,
     subtitle: String,
     body: String,
-    workspace_id: Option<String>,
+    target: DesktopNotificationTarget,
     unread: bool,
 }
 
@@ -6069,7 +6069,7 @@ fn handle_control_command(state: &State, command: ControlCommand) {
                 tab_id: None,
             };
             if let Some(request) =
-                mark_workspace_unread_with_message(state, &ws_id, &message, false, target)
+                mark_workspace_unread_with_message(state, &ws_id, &message, false, target.clone())
             {
                 show_desktop_notification(state, request);
             }
@@ -6085,7 +6085,7 @@ fn handle_control_command(state: &State, command: ControlCommand) {
                 } else {
                     Some(record_live_notification(
                         &mut app_state,
-                        Some(ws_id.clone()),
+                        target.clone(),
                         message.clone(),
                         title.clone(),
                         subtitle.clone(),
@@ -6121,7 +6121,7 @@ fn handle_control_command(state: &State, command: ControlCommand) {
                         .notifications
                         .iter()
                         .filter(|notification| notification.id == id)
-                        .filter_map(|notification| notification.workspace_id.clone())
+                        .map(|notification| notification.target.workspace_id.clone())
                         .collect::<Vec<_>>();
                     app_state
                         .notifications
@@ -6140,6 +6140,47 @@ fn handle_control_command(state: &State, command: ControlCommand) {
                 }
                 live_notifications_payload(&app_state.notifications, false)
             };
+            let _ = reply.send(Ok(payload));
+        }
+        ControlCommand::JumpNotification { id, reply } => {
+            let notification = {
+                let mut app_state = state.borrow_mut();
+                let Some(notification) = select_live_notification(&app_state.notifications, id) else {
+                    let _ = reply.send(Err(crate::control_bridge::BridgeError::not_found(
+                        "notification not found",
+                    )));
+                    return;
+                };
+                if !app_state
+                    .workspaces
+                    .iter()
+                    .any(|workspace| workspace.id == notification.target.workspace_id)
+                {
+                    let _ = reply.send(Err(crate::control_bridge::BridgeError::not_found(
+                        "notification target not found",
+                    )));
+                    return;
+                }
+                let notification = notification.clone();
+                for row in &mut app_state.notifications {
+                    if row.id == notification.id {
+                        row.unread = false;
+                    }
+                }
+                clear_workspace_unread_if_no_unread_notification(
+                    &mut app_state,
+                    &notification.target.workspace_id,
+                );
+                notification
+            };
+
+            activate_desktop_notification_target(state, &notification.target, None);
+            let payload = serde_json::json!({
+                "ok": true,
+                "jumped": true,
+                "notification_id": notification.id,
+                "notification": live_notification_row(&notification),
+            });
             let _ = reply.send(Ok(payload));
         }
     }
@@ -6465,7 +6506,7 @@ fn switch_workspace(state: &State, idx: usize) {
         let stack_name = format!("ws-{workspace_id}");
         let focus_root = s.workspaces[idx].root.clone();
         for notification in &mut s.notifications {
-            if notification.workspace_id.as_deref() == Some(workspace_id.as_str()) {
+            if notification.target.workspace_id == workspace_id {
                 notification.unread = false;
             }
         }
@@ -7382,6 +7423,15 @@ fn mark_workspace_unread(
 }
 
 fn live_notification_row(notification: &LiveNotification) -> serde_json::Value {
+    let pane_id = notification.target.pane_id.map(|id| id.to_string());
+    let pane_ref = notification.target.pane_id.map(pane_ref);
+    let surface_id = notification
+        .target
+        .pane_id
+        .zip(notification.target.tab_id.as_deref())
+        .map(|(pane_id, tab_id)| format!("{pane_id}:{tab_id}"));
+    let surface_ref = surface_id.as_deref().map(surface_ref);
+
     serde_json::json!({
         "id": notification.id,
         "notification_id": notification.id,
@@ -7389,9 +7439,22 @@ fn live_notification_row(notification: &LiveNotification) -> serde_json::Value {
         "title": notification.title,
         "subtitle": notification.subtitle,
         "body": notification.body,
-        "surface_id": serde_json::Value::Null,
-        "workspace_id": notification.workspace_id.as_deref(),
-        "workspace_ref": notification.workspace_id.as_deref().map(workspace_ref),
+        "workspace_id": notification.target.workspace_id.as_str(),
+        "workspace_ref": workspace_ref(&notification.target.workspace_id),
+        "pane_id": pane_id.as_deref(),
+        "pane_ref": pane_ref.as_deref(),
+        "tab_id": notification.target.tab_id.as_deref(),
+        "surface_id": surface_id.as_deref(),
+        "surface_ref": surface_ref.as_deref(),
+        "target": {
+            "workspace_id": notification.target.workspace_id.as_str(),
+            "workspace_ref": workspace_ref(&notification.target.workspace_id),
+            "pane_id": pane_id.as_deref(),
+            "pane_ref": pane_ref.as_deref(),
+            "tab_id": notification.target.tab_id.as_deref(),
+            "surface_id": surface_id.as_deref(),
+            "surface_ref": surface_ref.as_deref(),
+        },
         "is_read": !notification.unread,
         "unread": notification.unread,
     })
@@ -7409,6 +7472,23 @@ fn live_notifications_payload(
     serde_json::json!({ "notifications": rows })
 }
 
+fn select_live_notification(
+    notifications: &[LiveNotification],
+    id: Option<u64>,
+) -> Option<&LiveNotification> {
+    if let Some(id) = id {
+        return notifications
+            .iter()
+            .find(|notification| notification.id == id);
+    }
+
+    notifications
+        .iter()
+        .rev()
+        .find(|notification| notification.unread)
+        .or_else(|| notifications.last())
+}
+
 fn clear_workspace_unread_visuals(workspace: &mut Workspace) {
     workspace.unread = false;
     workspace.notify_dot.remove_css_class("limux-notify-dot");
@@ -7423,7 +7503,7 @@ fn clear_workspace_unread_visuals(workspace: &mut Workspace) {
 
 fn clear_workspace_unread_if_no_unread_notification(state: &mut AppState, workspace_id: &str) {
     let has_unread = state.notifications.iter().any(|notification| {
-        notification.unread && notification.workspace_id.as_deref() == Some(workspace_id)
+        notification.unread && notification.target.workspace_id == workspace_id
     });
     if has_unread {
         return;
@@ -7440,7 +7520,7 @@ fn clear_workspace_unread_if_no_unread_notification(state: &mut AppState, worksp
 
 fn record_live_notification(
     state: &mut AppState,
-    workspace_id: Option<String>,
+    target: DesktopNotificationTarget,
     message: String,
     title: String,
     subtitle: String,
@@ -7454,7 +7534,7 @@ fn record_live_notification(
         title,
         subtitle,
         body,
-        workspace_id,
+        target,
         unread: true,
     };
     state.notifications.push(notification.clone());
@@ -7489,7 +7569,7 @@ fn mark_workspace_unread_with_message(
 
     record_live_notification(
         &mut s,
-        Some(ws_id.to_string()),
+        target.clone(),
         message.to_string(),
         String::new(),
         String::new(),
@@ -7635,7 +7715,8 @@ mod tests {
         use_opaque_window_background,
         validate_workspace_folder_input_with_dirs, workspace_drop_layout_path,
         workspace_folder_path_from_input, workspace_notification_message, browser_screenshot_path,
-        live_notification_row, live_notifications_payload, Direction, LiveNotification,
+        live_notification_row, live_notifications_payload, select_live_notification, Direction,
+        LiveNotification,
         EditableCaptureContext, NeighborScore, PaneBounds, PaneCreateDirection,
         PaneCreateTargetError, PortalColorSchemePreference, SessionSaveAccess, SessionSaveRequest,
         WorkspaceSeedSource, BASE_CSS, HOST_ENTRY_CSS_CLASS, WORKSPACE_RENAME_ENTRY_CSS_CLASS,
@@ -7904,7 +7985,11 @@ mod tests {
                 title: "Codex".to_string(),
                 subtitle: String::new(),
                 body: "needs attention".to_string(),
-                workspace_id: Some("workspace-a".to_string()),
+                target: DesktopNotificationTarget {
+                    workspace_id: "workspace-a".to_string(),
+                    pane_id: Some(4),
+                    tab_id: Some("tab-a".to_string()),
+                },
                 unread: true,
             },
             LiveNotification {
@@ -7913,7 +7998,11 @@ mod tests {
                 title: String::new(),
                 subtitle: String::new(),
                 body: "read".to_string(),
-                workspace_id: None,
+                target: DesktopNotificationTarget {
+                    workspace_id: "workspace-b".to_string(),
+                    pane_id: None,
+                    tab_id: None,
+                },
                 unread: false,
             },
         ];
@@ -7923,7 +8012,27 @@ mod tests {
             unread["notifications"].as_array().expect("rows").len(),
             1
         );
-        assert_eq!(live_notification_row(&rows[0])["workspace_ref"], "workspace:workspace-a");
+        let row = live_notification_row(&rows[0]);
+        assert_eq!(row["workspace_ref"], "workspace:workspace-a");
+        assert_eq!(row["pane_ref"], "pane:4");
+        assert_eq!(row["surface_ref"], "surface:4:tab-a");
+        assert_eq!(select_live_notification(&rows, None).expect("selected").id, 1);
+        assert_eq!(select_live_notification(&rows, Some(2)).expect("selected").id, 2);
+
+        let read_rows = rows
+            .iter()
+            .cloned()
+            .map(|mut row| {
+                row.unread = false;
+                row
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            select_live_notification(&read_rows, None)
+                .expect("selected")
+                .id,
+            2
+        );
     }
 
     #[test]

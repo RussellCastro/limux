@@ -93,6 +93,7 @@ const METHODS: &[&str] = &[
     "notification.create",
     "notification.list",
     "notification.clear",
+    "notification.jump",
 ];
 
 const PARSE_ERROR_CODE: i64 = -32700;
@@ -374,6 +375,10 @@ pub enum ControlCommand {
         id: Option<u64>,
         reply: mpsc::Sender<BridgeResult>,
     },
+    JumpNotification {
+        id: Option<u64>,
+        reply: mpsc::Sender<BridgeResult>,
+    },
 }
 
 impl ControlCommand {
@@ -427,7 +432,8 @@ impl ControlCommand {
             | Self::SendKey { reply, .. }
             | Self::CreateNotification { reply, .. }
             | Self::ListNotifications { reply, .. }
-            | Self::ClearNotifications { reply, .. } => {
+            | Self::ClearNotifications { reply, .. }
+            | Self::JumpNotification { reply, .. } => {
                 let _ = reply.send(result);
             }
         }
@@ -1561,6 +1567,14 @@ fn handle_method(
                 rx,
             )
         }
+        "notification.jump" | "notifications.jump" | "jump-notification" | "open-notification" => {
+            let jump_id = match optional_u64(params, &["id", "notification_id"]) {
+                Ok(value) => value,
+                Err(error) => return error_response(id, error),
+            };
+            let (reply, rx) = mpsc::channel();
+            (ControlCommand::JumpNotification { id: jump_id, reply }, rx)
+        }
         _ => {
             return error_response(
                 id,
@@ -2176,6 +2190,18 @@ mod tests {
             },
         );
         assert_eq!(cleared.error, None);
+
+        let jumped = dispatch_request(
+            r#"{"id":3,"method":"notification.jump","params":{"id":9}}"#,
+            &|command| match command {
+                ControlCommand::JumpNotification { id, reply } => {
+                    assert_eq!(id, Some(9));
+                    let _ = reply.send(Ok(json!({ "jumped": true })));
+                }
+                other => panic!("unexpected command: {other:?}"),
+            },
+        );
+        assert_eq!(jumped.error, None);
     }
 
     #[test]
